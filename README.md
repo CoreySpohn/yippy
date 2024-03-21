@@ -1,2 +1,2 @@
 # yippy
-Python wrapper for yield input packages
+A minimal wrapper to create a coronagraph object from a yield input package

@@ -1,0 +1,28 @@
+[build-system]
+requires = ['hatchling', "hatch-fancy-pypi-readme"]
+build-backend = "hatchling.build"
+
+[project]
+name = "yippy"
+version = "0.1"
+authors = [{ name = "Corey Spohn", email = "corey.a.spohn@nasa.gov" }]
+description = "A minimal wrapper to create a coronagraph object from a yield input package"
+dependencies = ["numpy", "astropy", "scipy", "lod_unit", "tqdm"]
+license = { file = "LICENSE" }
+dynamic = ['readme']
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Astronomy",
+]
+
+[project.urls]
+Homepage = "https://github.com/CoreySpohn/yippy"
+Issues = "https://github.com/CoreySpohn/yippy/issues"
+
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
