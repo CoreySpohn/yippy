@@ -32,8 +32,10 @@ class Coronagraph:
                     offax_psf_offset_list - The off-axis PSF list
                     offax_psf - PSF of off-axis sources
                     sky_trans - Sky transmission data
-            verbose (Bool):
-                Whether to use print statements
+            logging_level (str):
+                Logging level for the logger (e.g. INFO, DEBUG, WARNING, ERROR,
+                CRITICAL), use to suppress logging if used as part of a larger
+                workflow. Default is INFO.
         """
 
         self.logger = setup_logger(logging_level)
