@@ -14,30 +14,28 @@ from yippy.logger import setup_logger
 
 class Coronagraph:
     def __init__(self, yip_path, logging_level="INFO"):
+        """Args:
+        yip_path (str):
+            Yield input package directory. Must have fits files
+                stellar_intens.fits - Stellar intensity map
+                    Unitless 3d array of the stellar intensity function I,
+                    as a function of (x, y) pixel coordinates and the
+                    stellar angular diameter theta_star. Values in the map
+                    are equal to the stellar count rate in a given pixel
+                    divided by the total stellar count rate entering the
+                    coronagraph. Does not include reductions such as QE, as
+                    in without a coronagraph the total of I is unity.
+                stellar_intens_diam_list.fits - Stellar diameter list
+                    A vector of stellar diameter values (lam/D) corresponding
+                    to the theta_star values in stellar_intens.
+                offax_psf_offset_list - The off-axis PSF list
+                offax_psf - PSF of off-axis sources
+                sky_trans - Sky transmission data
+        logging_level (str):
+            Logging level for the logger (e.g. INFO, DEBUG, WARNING, ERROR,
+            CRITICAL), use to suppress logging if used as part of a larger
+            workflow. Default is INFO.
         """
-        Args:
-            yip_path (str):
-                Yield input package directory. Must have fits files
-                    stellar_intens.fits - Stellar intensity map
-                        Unitless 3d array of the stellar intensity function I,
-                        as a function of (x, y) pixel coordinates and the
-                        stellar angular diameter theta_star. Values in the map
-                        are equal to the stellar count rate in a given pixel
-                        divided by the total stellar count rate entering the
-                        coronagraph. Does not include reductions such as QE, as
-                        in without a coronagraph the total of I is unity.
-                    stellar_intens_diam_list.fits - Stellar diameter list
-                        A vector of stellar diameter values (lam/D) corresponding
-                        to the theta_star values in stellar_intens.
-                    offax_psf_offset_list - The off-axis PSF list
-                    offax_psf - PSF of off-axis sources
-                    sky_trans - Sky transmission data
-            logging_level (str):
-                Logging level for the logger (e.g. INFO, DEBUG, WARNING, ERROR,
-                CRITICAL), use to suppress logging if used as part of a larger
-                workflow. Default is INFO.
-        """
-
         self.logger = setup_logger(logging_level)
         ###################
         # Read input data #
@@ -250,8 +248,7 @@ class Coronagraph:
         self.has_psf_datacube = False
 
     def get_coro_thruput(self, aperture_radius_lod=0.8, oversample=100, plot=True):
-        """
-        Get coronagraph throughput
+        """Get coronagraph throughput
         Args:
             aperture_radius (float):
                 Circular aperture radius, in lambda/D (I think)
@@ -336,9 +333,7 @@ class Coronagraph:
         return coro_thruput
 
     def get_disk_psfs(self):
-        """
-        Load the disk image from a file or generate it if it doesn't exist
-        """
+        """Load the disk image from a file or generate it if it doesn't exist"""
         # Load data cube of spatially dependent PSFs.
         disk_dir = Path(".cache/disks/")
         if not disk_dir.exists():
