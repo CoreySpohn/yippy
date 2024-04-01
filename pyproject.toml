@@ -28,3 +28,28 @@ content-type = "text/markdown"
 
 [[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
 path = "README.md"
+
+[tool.ruff]
+select = ["D"]
+
+[tool.ruff.pydocstyle]
+convention = "google"
+
+[tool.pyright]
+include = ["src/"]
+exclude = ["tests/", "**/__pycache__", "**/*.venv", "src/**/data"]
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
+reportMissingImports = false
+reportMissingTypeStubs = false
+reportMissingModuleSource = true
+reportMissingParameterType = true
+reportMissingReturnType = true
+reportGeneralTypeIssues = true
+reportUnknownMemberType = "none"
+reportUnknownParameterType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportUnknownLambdaType = false
+reportUnboundVariable = true
