@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "yippy"
 authors = [{ name = "Corey Spohn", email = "corey.a.spohn@nasa.gov" }]
 description = "A minimal wrapper to create a coronagraph object from a yield input package"
-dependencies = ["astropy", "scipy", "lod_unit", "tqdm"]
+dependencies = ["astropy", "scipy", "lod_unit", "tqdm", "xarray"]
 license = { file = "LICENSE" }
 dynamic = ['readme', 'version']
 requires-python = ">=3.9"
@@ -46,7 +46,7 @@ test = ["nox", "pytest", "hypothesis", "pytest-cov"]
 [tool.ruff]
 select = ["D"]
 
-[tool.ruff.lint.pydocstyle]
+[tool.ruff.pydocstyle]
 convention = "google"
 
 [tool.pyright]
