@@ -46,7 +46,7 @@ test = ["nox", "pytest", "hypothesis", "pytest-cov"]
 [tool.ruff]
 select = ["D"]
 
-[tool.ruff.pydocstyle]
+[tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.pyright]
