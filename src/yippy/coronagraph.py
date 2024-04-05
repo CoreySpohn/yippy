@@ -7,8 +7,7 @@ import astropy.units as u
 import numpy as np
 import xarray as xr
 from lod_unit import lod
-from scipy.interpolate import RegularGridInterpolator, interp1d
-from scipy.ndimage import rotate, zoom
+from scipy.ndimage import rotate
 from tqdm import tqdm
 
 from yippy.logger import setup_logger
@@ -77,13 +76,16 @@ class Coronagraph:
         # Get pixel scale with units
         self.pixel_scale = stellar_intens_header["PIXSCALE"] * lod / u.pixel
 
-        self.offax = OffAx(yip_path, self.logger, offax_data_file, offax_offsets_file)
+        self.offax = OffAx(
+            yip_path, self.logger, offax_data_file, offax_offsets_file, self.pixel_scale
+        )
 
         #
         # ############
         # # Clean up #
         # ############
-        # # Center coronagraph model so that image size is odd and central pixel is center
+        # # Center coronagraph model so that image size is odd
+        # # and central pixel is center
         # # TODO: Automate this process
         # verified_coronagraph_models = [
         #     "LUVOIR-A_APLC_10bw_smallFPM_2021-05-05_Dyn10pm-nostaticabb",
