@@ -37,32 +37,31 @@ class OffAx:
 
         # The offset list here is in units of lambda/D
         offsets = pyfits.getdata(Path(yip_dir, offax_offsets_file), 0) * lod
-
-        self.center_x = psfs.shape[1] / 2 * u.pix
-        self.center_y = psfs.shape[2] / 2 * u.pix
-        assert (
-            len(offsets) == psfs.shape[0]
-        ), "Offsets and PSFs do not have the same number of elements"
-
-        ########################################################################
-        # Determine the format of the input coronagraph files so we can handle #
-        # the coronagraph correctly (e.g. radially symmetric in x direction)   #
-        ########################################################################
-
         # Check whether offsets is 1D or 2D
-        if len(offsets.shape) == 1:
-            type = "1d"
+        one_d_offsets = len(offsets.shape) == 1
+        # Add a second dimension if the offsets are 1D
+        if one_d_offsets:
+            offsets = np.vstack((offsets, np.zeros_like(offsets)))
 
         if len(offsets.shape) > 1:
             if (offsets.shape[1] != 2) and (offsets.shape[0] == 2):
                 # This condition occurs when the offsets is transposed
                 # from the expected format for radially symmetric coronagraphs
                 offsets = offsets.T
+        assert (
+            len(offsets) == psfs.shape[0]
+        ), "Offsets and PSFs do not have the same number of elements"
+
+        self.center_x = psfs.shape[1] / 2 * u.pix
+        self.center_y = psfs.shape[2] / 2 * u.pix
+
+        ########################################################################
+        # Determine the format of the input coronagraph files so we can handle #
+        # the coronagraph correctly (e.g. radially symmetric in x direction)   #
+        ########################################################################
 
         # Check that we have both x and y offset information (even if there
         # is only one axis with multiple values)
-        if offsets.shape[1] != 2:
-            raise UserWarning("Array offsets should have 2 columns")
 
         # Get the unique values of the offset list so that we can format the
         # data into
