@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/CoreySpohn/yippy/compare/v1.0.0...v1.1.0) (2024-04-05)
+
+
+### Features
+
+* **main:** Add off-axis psfs with automatic unit conversion ([6f5b815](https://github.com/CoreySpohn/yippy/commit/6f5b815093e6fe7898cd625451ad31ab1acee221))
+
 ## 1.0.0 (2024-03-22)
 
 
