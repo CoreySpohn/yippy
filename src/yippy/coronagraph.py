@@ -80,19 +80,6 @@ class Coronagraph:
             yip_path, self.logger, offax_data_file, offax_offsets_file, self.pixel_scale
         )
 
-        # plot the first 10 psfs
-        import matplotlib.pyplot as plt
-
-        fig, axes = plt.subplots(2, 5)
-        for i, ax in enumerate(axes.flat):
-            x = i * lod
-            y = 0 * lod
-            psf = self.offax(x, y)
-            ax.imshow(psf, origin="lower")
-            ax.set_title(f"PSF {i}")
-        breakpoint()
-
-        #
         # ############
         # # Clean up #
         # ############
