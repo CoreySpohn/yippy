@@ -10,7 +10,7 @@ from astropy.units import Quantity
 from lod_unit import lod
 from numpy.typing import NDArray
 
-from yippy.offax_psf import OneD
+from yippy.offax_psf import OneD, QuarterSymmetric, TwoD
 from yippy.util import convert_to_lod
 
 if TYPE_CHECKING:
@@ -35,55 +35,54 @@ class OffAx:
         # Load off-axis PSF data (e.g. the planet) (unitless intensity maps)
         psfs = pyfits.getdata(Path(yip_dir, offax_data_file), 0)
 
-        # The offset list here is in units of lambda/D
+        # Save the center of the PSF, which is used for converting to lambda/D
+        # when the x/y positions are in pixels.
+        self.center_x = psfs.shape[1] / 2 * u.pix
+        self.center_y = psfs.shape[2] / 2 * u.pix
+
+        # Load the offset list, which is in units of lambda/D
         offsets = pyfits.getdata(Path(yip_dir, offax_offsets_file), 0) * lod
-        # Check whether offsets is 1D or 2D
+
+        # Check whether offsets are given as 1D or 2D
         one_d_offsets = len(offsets.shape) == 1
-        # Add a second dimension if the offsets are 1D
         if one_d_offsets:
+            # Add a second dimension if the offsets are 1D
             offsets = np.vstack((offsets, np.zeros_like(offsets)))
 
         if len(offsets.shape) > 1:
             if (offsets.shape[1] != 2) and (offsets.shape[0] == 2):
                 # This condition occurs when the offsets is transposed
-                # from the expected format for radially symmetric coronagraphs
+                # from the expected format
                 offsets = offsets.T
         assert (
             len(offsets) == psfs.shape[0]
         ), "Offsets and PSFs do not have the same number of elements"
-
-        self.center_x = psfs.shape[1] / 2 * u.pix
-        self.center_y = psfs.shape[2] / 2 * u.pix
 
         ########################################################################
         # Determine the format of the input coronagraph files so we can handle #
         # the coronagraph correctly (e.g. radially symmetric in x direction)   #
         ########################################################################
 
-        # Check that we have both x and y offset information (even if there
-        # is only one axis with multiple values)
-
         # Get the unique values of the offset list so that we can format the
         # data into
         offsets_x = np.unique(offsets[:, 0])
         offsets_y = np.unique(offsets[:, 1])
 
-        if (len(offsets_x) == 1) and (offsets_x[0] == 0 * lod):
+        if len(offsets_x) == 1:
             logger.info("Coronagraph is radially symmetric")
             type = "1d"
             # Instead of handling angles for 1dy, swap the x and y
             offsets_x, offsets_y = (offsets_y, offsets_x)
-        elif (len(offsets_y) == 1) and (offsets_y[0] == 0 * lod):
-            logger.info("Coronagraph is radially symmetric")
-            type = "1d"
-        elif len(offsets_x) == 1:
-            # 1 dimensional with offset (e.g. no offset=0)
-            logger.info("Coronagraph is radially symmetric")
-            type = "1dno0"
-            offsets_x, offsets_y = (offsets_y, offsets_x)
+            raise NotImplementedError(
+                (
+                    "Verify that the PSFs are correct for this case!"
+                    " I don't have a test file for this case yet but I think they"
+                    " probably need to be rotated by 90 degrees."
+                )
+            )
         elif len(offsets_y) == 1:
             logger.info("Coronagraph is radially symmetric")
-            type = "1dno0"
+            type = "1d"
         elif np.min(offsets) >= 0 * lod:
             logger.info("Coronagraph is quarterly symmetric")
             type = "2dq"
@@ -95,7 +94,10 @@ class OffAx:
         if "1" in type:
             # Always set up to interpolate along the x axis
             self.psf = OneD(psfs, offsets_x)
-        else:
+        elif type == "2dq":
+            self.psf = QuarterSymmetric(psfs, offsets)
+        elif type == "2df":
+            self.psf = TwoD(psfs, offsets_x, offsets_y)
             pass
             # zz_temp = psfs.reshape(
             #     offsets_x.shape[0],

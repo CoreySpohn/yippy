@@ -1,4 +1,4 @@
-"""This module handles one dimensional offax_psfs.fits files."""
+"""This module handles one dimensional offax_psf.fits files."""
 
 import astropy.units as u
 import numpy as np
@@ -21,7 +21,8 @@ class OneD:
                 Array of length n with the offsets of the off-axis PSFs in lambda/D.
         """
         # Check where the offsets begin
-        self.offset_range = u.Quantity([offsets[0], offsets[-1]])
+        self.min_offset = offsets[0]
+        self.max_offset = offsets[-1]
         self.psf_shape = psfs.shape[1:]
 
         # Interpolate the PSFs in log space to avoid negative values
@@ -46,7 +47,7 @@ class OneD:
                 The PSF at the given x/y position
         """
         sep = np.sqrt(x**2 + y**2)
-        if sep < self.offset_range[0] or sep > self.offset_range[1]:
+        if sep < self.min_offset or sep > self.max_offset:
             # If the separation is outside the range of the PSFs, return zeros
             return np.zeroslike(self.psf_shape)
 
