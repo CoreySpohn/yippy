@@ -25,13 +25,6 @@ class QuarterSymmetric:
         """
         x_offsets = np.unique(offsets[:, 0])
         y_offsets = np.unique(offsets[:, 1])
-        # Reshape the PSFs to be (n_x_offsets, n_y_offsets, xpix, ypix)
-        # reshaped_psfs = psfs.reshape(
-        #     len(x_offsets),
-        #     len(y_offsets),
-        #     psfs.shape[1],
-        #     psfs.shape[2],
-        # )
         # Initialize an empty array for the reshaped PSFs with an extra
         # dimension for symmetry
         reshaped_psfs = np.zeros(
@@ -52,30 +45,33 @@ class QuarterSymmetric:
                     # Handle missing PSFs for some offset pairs if necessary
                     raise ValueError("Missing PSF for offset pair ({ox}, {oy})")
 
-        # Extend offsets to include their negatives (for quarter symmetry)
-        extended_x_offsets = np.append(-x_offsets[:1], x_offsets)
-        extended_y_offsets = np.append(-y_offsets[:1], y_offsets)
+        # TODO: Figure out how this should be handled. Should 0 values be undefined if
+        # not in the data? Even for something like x=10, y=0?
 
-        # Pad and reflect the reshaped PSFs to cover the full plane
-        symmetric_psfs = np.pad(reshaped_psfs, ((1, 0), (1, 0), (0, 0), (0, 0)))
+        # Basically adding a flipped version of the nearest PSF to the x and y axes
+        # (say 0.1 lam/D) to the the -0.1 lam/D position. This lets us easily use
+        # 0 offsets in the interpolation even though we usually are not given values
+        # for 0.
 
-        # Reflect across y-axis
-        symmetric_psfs[0, 1:] = reshaped_psfs[0, :, ::-1, :]
-        # Reflect across x-axis
-        symmetric_psfs[1:, 0] = reshaped_psfs[:, 0, :, ::-1]
-        # Reflect the first quadrant to cover the origin
-        symmetric_psfs[0, 0] = reshaped_psfs[0, 0, ::-1, ::-1]
+        # Add an extra dimension to the PSFs to allow for 0 offsets
+        padded_psfs = np.pad(reshaped_psfs, ((1, 0), (1, 0), (0, 0), (0, 0)))
+        padded_psfs[0, 1:] = reshaped_psfs[0, :, :, ::-1]
+        padded_psfs[1:, 0] = reshaped_psfs[:, 0, ::-1, :]
+        padded_psfs[0, 0] = reshaped_psfs[0, 0, ::-1, ::-1]
+
+        # Extend offsets to include the negative of the smallest offset
+        extended_x_offsets = np.append(-x_offsets[0], x_offsets)
+        extended_y_offsets = np.append(-y_offsets[0], y_offsets)
 
         # Log transform the PSF values (avoid negative values in interpolation)
-        log_symmetric_psfs = np.log(symmetric_psfs)
+        log_psfs = np.log(padded_psfs)
 
-        # Choose an appropriate fill_value for log space (e.g., log of the
-        # minimum positive PSF value)
-        fill_value = np.min(log_symmetric_psfs[log_symmetric_psfs > -np.inf])
+        # Setting fill_value to -np.inf to return zeros for out of range values
+        fill_value = -np.inf
 
         self.log_interp = RegularGridInterpolator(
             (extended_x_offsets, extended_y_offsets),
-            log_symmetric_psfs,
+            log_psfs,
             method="linear",
             bounds_error=False,
             fill_value=fill_value,
@@ -96,5 +92,18 @@ class QuarterSymmetric:
             NDArray:
                 The PSF at the given x/y position
         """
-        psf = np.exp(self.log_interp(Quantity([x, y])))[0]
+        # Translate the x, y values to the first quadrant
+        x_val_first_quadrant = abs(x)
+        y_val_first_quadrant = abs(y)
+
+        # Use the interpolator to get the PSF in the first quadrant
+        psf = np.exp(
+            self.log_interp(Quantity([x_val_first_quadrant, y_val_first_quadrant]))
+        )[0]
+
+        # Flip the PSF back to the original quadrant if necessary
+        if x < 0:
+            psf = np.flip(psf, axis=1)  # Flip horizontally
+        if y < 0:
+            psf = np.flip(psf, axis=0)  # Flip vertically
         return psf
