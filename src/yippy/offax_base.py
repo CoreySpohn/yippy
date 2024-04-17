@@ -18,7 +18,36 @@ if TYPE_CHECKING:
 
 
 class OffAx:
-    """Base class for all off-axis classes."""
+    """Base class for handling off-axis PSFs.
+
+    This class loads and processes PSF data from the yield input package (YIP).
+    It currently supports oneD and quater symmetric PSF YIPs. The primary use
+    is to interpolate the PSF data to a given x/y position. This is done by
+    calling the OffAx object with the x/y position as arguments, which itself
+    calls the psf object after converting units.
+
+    Attributes:
+        pixel_scale (Quantity):
+            Pixel scale of the PSF data in lambda/D.
+        center_x (Quantity):
+            Central x position in the PSF data.
+        center_y (Quantity):
+            Central y position in the PSF data.
+        psf:
+            Instance of the appropriate PSF class (e.g., OneD, TwoD) based on input YIP.
+
+    Args:
+        yip_dir (Path):
+            Path to the directory containing PSF and offset data.
+        logger (Logger):
+            Logger for logging events and information.
+        offax_data_file (str):
+            Name of the file containing the PSF data.
+        offax_offsets_file (str):
+            Name of the file containing the offsets data.
+        pixel_scale (Quantity):
+            Pixel scale of the PSF data in lambda/D.
+    """
 
     def __init__(
         self,
@@ -28,15 +57,19 @@ class OffAx:
         offax_offsets_file: str,
         pixel_scale: Quantity,
     ) -> None:
-        """Initialize the OffAx class."""
+        """Initializes the OffAx class by loading PSF and offset data from YIP.
+
+        Determines the type of coronagraph based on the symmetry and structure of the
+        offsets and chooses the correct PSF class (OneD, QuarterSymmetric) accordingly.
+        """
         # Pixel scale in lambda/D
         self.pixel_scale = pixel_scale
 
         # Load off-axis PSF data (e.g. the planet) (unitless intensity maps)
         psfs = pyfits.getdata(Path(yip_dir, offax_data_file), 0)
 
-        # Save the center of the PSF, which is used for converting to lambda/D
-        # when the x/y positions are in pixels.
+        # Save the center of the pixel array, which is used for converting to
+        # lambda/D when the x/y positions are in pixels.
         self.center_x = psfs.shape[1] / 2 * u.pix
         self.center_y = psfs.shape[2] / 2 * u.pix
 
@@ -98,46 +131,6 @@ class OffAx:
             self.psf = QuarterSymmetric(psfs, offsets)
         elif type == "2df":
             self.psf = TwoD(psfs, offsets_x, offsets_y)
-            pass
-            # zz_temp = psfs.reshape(
-            #     offsets_x.shape[0],
-            #     offsets_y.shape[0],
-            #     psfs.shape[1],
-            #     psfs.shape[2],
-            # )
-        #     if type == "2dq":
-        #         # Reflect PSFs to cover the x = 0 and y = 0 axes.
-        #         offsets_x = np.append(
-        #             -offsets_x[0], offsets_x
-        #         )
-        #         offsets_y = np.append(
-        #             -offsets_y[0], offsets_y
-        #         )
-        #         zz = np.pad(zz_temp, ((1, 0), (1, 0), (0, 0), (0, 0)))
-        #         zz[0, 1:] = zz_temp[0, :, ::-1, :]
-        #         zz[1:, 0] = zz_temp[:, 0, :, ::-1]
-        #         zz[0, 0] = zz_temp[0, 0, ::-1, ::-1]
-        #
-        #         ln_offax_psf_interp = RegularGridInterpolator(
-        #             (offsets_x, offsets_y),
-        #             np.log(zz),
-        #             method="linear",
-        #             bounds_error=False,
-        #             fill_value=fill,
-        #         )
-        #     else:
-        #         # This section included references to non-class attributes for
-        #         # offsets_x and offsets_y. I think it meant
-        #         # to be the class attributes
-        #         ln_offax_psf_interp = RegularGridInterpolator(
-        #             (offsets_x, offsets_y),
-        #             np.log(zz_temp),
-        #             method="linear",
-        #             bounds_error=False,
-        #             fill_value=fill,
-        #         )
-        # offax_psf_interp = lambda coordinate: np.exp(ln_offax_psf_interp(coordinate))
-        #
 
     def __call__(
         self, x: Quantity, y: Quantity, lam=None, D=None, dist=None
