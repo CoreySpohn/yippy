@@ -10,8 +10,9 @@ from lod_unit import lod
 from scipy.ndimage import rotate
 from tqdm import tqdm
 
-from yippy.logger import setup_logger
-from yippy.offax_base import OffAx
+from .logger import setup_logger
+from .offax_base import OffAx
+from .stellar_intens import StellarIntens
 
 
 class Coronagraph:
@@ -27,6 +28,8 @@ class Coronagraph:
     def __init__(
         self,
         yip_path: Path,
+        stellar_intens_file: str = "stellar_intens.fits",
+        stellar_diam_file: str = "stellar_intens_diam_list.fits",
         offax_data_file: str = "offax_psf.fits",
         offax_offsets_file: str = "offax_psf_offset_list.fits",
         logging_level: str = "INFO",
@@ -42,6 +45,11 @@ class Coronagraph:
                     offax_psf_offset_list - The off-axis PSF list
                     offax_psf - PSF of off-axis sources
                     sky_trans - Sky transmission data
+            stellar_intens_file (str):
+                Name of the stellar intensity file. Default is stellar_intens.fits
+            stellar_diam_file (str):
+                Name of the stellar intensity diameter list file. Default is
+                stellar_intens_diam_list.fits
             offax_data_file (str):
                 Name of the off-axis PSF file. Default is offax_psf.fits
             offax_offsets_file (str):
@@ -65,17 +73,16 @@ class Coronagraph:
             Path(yip_path, "stellar_intens.fits"), 0
         )
 
-        # Stellar intensity of the star being observed as function of stellar
-        # angular diameter (unitless)
-        self.stellar_intens = pyfits.getdata(Path(yip_path, "stellar_intens.fits"), 0)
-        # the stellar angular diameters in stellar_intens_1 in units of lambda/D
-        self.stellar_intens_diam_list = (
-            pyfits.getdata(Path(yip_path, "stellar_intens_diam_list.fits"), 0) * lod
-        )
-
         # Get pixel scale with units
         self.pixel_scale = stellar_intens_header["PIXSCALE"] * lod / u.pixel
 
+        # Stellar intensity of the star being observed as function of stellar
+        # angular diameter (unitless)
+        self.stellar_intens = StellarIntens(
+            yip_path, self.logger, stellar_intens_file, stellar_diam_file
+        )
+
+        # Offaxis PSF of the planet as function of separation from the star
         self.offax = OffAx(
             yip_path, self.logger, offax_data_file, offax_offsets_file, self.pixel_scale
         )

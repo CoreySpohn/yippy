@@ -36,7 +36,7 @@ def setup_logger(shell_level="INFO", file_level="DEBUG", disable_shell_logging=F
     if not disable_shell_logging:
         shell_handler = logging.StreamHandler()
         shell_handler.setLevel(level_mapping.get(shell_level.upper(), logging.INFO))
-        shell_fmt = "yippy %(levelname)s [%(asctime)s] %(message)s"
+        shell_fmt = "[yippy] %(levelname)s [%(asctime)s] %(message)s"
         shell_formatter = logging.Formatter(shell_fmt)
         shell_handler.setFormatter(shell_formatter)
         logger.addHandler(shell_handler)
