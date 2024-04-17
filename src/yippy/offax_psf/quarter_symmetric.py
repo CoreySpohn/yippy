@@ -7,7 +7,26 @@ from scipy.interpolate import RegularGridInterpolator
 
 
 class QuarterSymmetric:
-    """Class for quarter symmetric offax_psf data."""
+    """Handles interpolation of quarter symmetric off-axis PSFs.
+
+    This class manages PSFs that are symmetric across both axes, only defined in
+    the first quadrant, and uses this symmetry to interpolate the PSF over all
+    quadrants. It assumes PSF data is only provided for the first quadrant and
+    mirrors this data to simulate the other quadrants. This class should not be
+    interacted with directly, but rather by calling Coronagraph.offax(x,y) which
+    then calls this class when appropriate.
+
+    Attributes:
+        log_interp (RegularGridInterpolator):
+            Interpolator object for PSF data that works in logarithmic space to
+            prevent negative interpolation values.
+
+    Args:
+        psfs (NDArray):
+            The off-axis PSFs, shaped (n_x_offsets * n_y_offsets, xpix, ypix).
+        offsets (Quantity):
+            Array of offsets in lambda/D, shaped (n_x_offsets * n_y_offsets, 2).
+    """
 
     def __init__(self, psfs: NDArray, offsets: Quantity) -> None:
         """Initialize the QuarterSymmetric class.
@@ -78,19 +97,20 @@ class QuarterSymmetric:
         )
 
     def __call__(self, x: Quantity, y: Quantity):
-        """Return the PSF at the given x/y position.
+        """Calculates and returns the PSF at the specified x,y position in lambda/D.
 
-        Calculates the separation of the position and determines. If the x/y
-        position is outside the range of the PSFs, it will return zeros.
+        The method utilizes the symmetry of the PSF data to interpolate across all
+        quadrants, handling negative x and y values by reflecting the PSF appropriately.
 
         Args:
-            x(Quantity):
-                x position in lambda/D
-            y(Qunatity):
-                y position in lambda/D
+            x (Quantity):
+                x position in lambda/D.
+            y (Quantity):
+                y position in lambda/D.
+
         Returns:
             NDArray:
-                The PSF at the given x/y position
+                The interpolated and possibly rotated PSF array at the given position.
         """
         # Translate the x, y values to the first quadrant
         x_val_first_quadrant = abs(x)
@@ -103,7 +123,9 @@ class QuarterSymmetric:
 
         # Flip the PSF back to the original quadrant if necessary
         if x < 0:
-            psf = np.flip(psf, axis=1)  # Flip horizontally
+            # Flip horizontally
+            psf = np.flip(psf, axis=1)
         if y < 0:
-            psf = np.flip(psf, axis=0)  # Flip vertically
+            # Flip vertically
+            psf = np.flip(psf, axis=0)
         return psf
