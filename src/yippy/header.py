@@ -45,7 +45,7 @@ class HeaderData:
     wfe: Optional[u.Quantity] = None
 
     @staticmethod
-    def extract_unit(comment: str, default_unit: u.Unit) -> u.Unit:
+    def extract_unit(comment: str, default_unit: u.Unit, key: str) -> u.Unit:
         """Extract a unit from the comment string of a FITS header entry.
 
         This attempts to read the FITS header comment and search for an astropy
@@ -59,6 +59,8 @@ class HeaderData:
                 The comment string associated with a FITS header key.
             default_unit (u.Unit):
                 The default unit to return if no unit is found in the comment.
+            key (str):
+                The key of the header entry to extract the unit from.
 
         Returns:
             u.Unit:
@@ -95,17 +97,22 @@ class HeaderData:
             num_astropy_unit = unit_patterns.get(num_unit.lower(), None)
             den_astropy_unit = unit_patterns.get(den_unit.lower(), None)
             if num_astropy_unit and den_astropy_unit:
+                logger.debug(
+                    f"Extracted compound unit {num_astropy_unit}/{den_astropy_unit}"
+                    f' for {key} from "{comment}"'
+                )
                 return num_astropy_unit / den_astropy_unit
 
         # Search for any of these single units in the comment
         for pattern, unit in unit_patterns.items():
             if re.search(r"\b" + re.escape(pattern) + r"\b", comment, re.IGNORECASE):
+                logger.debug(f'Extracted {unit} from "{comment}" for {key}')
                 return unit
 
         logger.warning(
             (
+                f"Using default unit for {key}: {default_unit}. "
                 f'Could not extract unit from comment: "{comment}"'
-                f"Using default unit: {default_unit}"
             )
         )
         return default_unit
@@ -129,7 +136,7 @@ class HeaderData:
         """
         if key in header:
             value = float(header[key])
-            unit = HeaderData.extract_unit(header.comments[key], default_unit)
+            unit = HeaderData.extract_unit(header.comments[key], default_unit, key)
             return value * unit
         else:
             return None

@@ -6,7 +6,6 @@ import astropy.io.fits as pyfits
 import astropy.units as u
 import numpy as np
 import xarray as xr
-from lod_unit import lod
 from scipy.ndimage import rotate
 from tqdm import tqdm
 
@@ -72,7 +71,7 @@ class Coronagraph:
 
         # Get pixel scale with units
         self.header = HeaderData.from_fits_header(stellar_intens_header)
-        self.pixel_scale = stellar_intens_header["PIXSCALE"] * lod / u.pixel
+        self.pixel_scale = self.header.pixscale
 
         # Stellar intensity of the star being observed as function of stellar
         # angular diameter (unitless)
