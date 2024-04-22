@@ -10,8 +10,10 @@ from lod_unit import lod
 from scipy.ndimage import rotate
 from tqdm import tqdm
 
-from .logger import setup_logger
+from .header import HeaderData
+from .logger import logger
 from .offax_base import OffAx
+from .sky_trans import SkyTrans
 from .stellar_intens import StellarIntens
 
 
@@ -32,7 +34,7 @@ class Coronagraph:
         stellar_diam_file: str = "stellar_intens_diam_list.fits",
         offax_data_file: str = "offax_psf.fits",
         offax_offsets_file: str = "offax_psf_offset_list.fits",
-        logging_level: str = "INFO",
+        sky_trans_file: str = "sky_trans.fits",
     ):
         """Initialize the Coronagraph object.
 
@@ -55,37 +57,41 @@ class Coronagraph:
             offax_offsets_file (str):
                 Name of the off-axis PSF offset list file. Default is
                 offax_psf_offset_list.fits
-            logging_level (str):
-                Logging level for the logger (e.g. INFO, DEBUG, WARNING, ERROR,
-                CRITICAL), use to suppress logging if used as part of a larger
-                workflow. Default is INFO.
+            sky_trans_file (str):
+                Name of the sky transmission data file. Default is sky_trans.fits.
         """
-        self.logger = setup_logger(logging_level)
         ###################
         # Read input data #
         ###################
-        self.logger.info("Creating coronagraph")
+        logger.info("Creating coronagraph")
 
         yip_path = Path(yip_path)
         self.name = yip_path.stem
         # Get header and calculate the lambda/D value
-        stellar_intens_header = pyfits.getheader(
-            Path(yip_path, "stellar_intens.fits"), 0
-        )
+        stellar_intens_header = pyfits.getheader(Path(yip_path, stellar_intens_file), 0)
 
         # Get pixel scale with units
+        self.header = HeaderData.from_fits_header(stellar_intens_header)
         self.pixel_scale = stellar_intens_header["PIXSCALE"] * lod / u.pixel
 
         # Stellar intensity of the star being observed as function of stellar
         # angular diameter (unitless)
         self.stellar_intens = StellarIntens(
-            yip_path, self.logger, stellar_intens_file, stellar_diam_file
+            yip_path, stellar_intens_file, stellar_diam_file
         )
 
         # Offaxis PSF of the planet as function of separation from the star
         self.offax = OffAx(
-            yip_path, self.logger, offax_data_file, offax_offsets_file, self.pixel_scale
+            yip_path, offax_data_file, offax_offsets_file, self.pixel_scale
         )
+
+        # Get the sky_trans mask
+        self.sky_trans = SkyTrans(yip_path, sky_trans_file)
+
+        # PSF datacube here is a 4D array of PSFs at each pixel (x psf offset,
+        # y psf offset, x, y). Given the computational cost of generating this
+        # datacube, it is only generated when needed.
+        self.has_psf_datacube = False
 
         # ############
         # # Clean up #
@@ -107,27 +113,6 @@ class Coronagraph:
         #         "Please validate centering for this unknown coronagraph model"
         #     )
         #
-        # # Simulation parameters
-        # self.yip_path = yip_path
-        #
-        # #########################################################################
-        # # Interpolate coronagraph model (in log space to avoid negative values) #
-        # #########################################################################
-        # # Fill value for interpolation
-        # fill = np.log(1e-100)
-        #
-        # # interpolate stellar data
-        # self.ln_stellar_intens_interp = interp1d(
-        #     self.stellar_intens_diam_list,
-        #     np.log(self.stellar_intens),
-        #     kind="cubic",
-        #     axis=0,
-        #     bounds_error=False,
-        #     fill_value=fill,
-        # )
-        # self.stellar_intens_interp = lambda stellar_diam: np.exp(
-        #     self.ln_stellar_intens_interp(stellar_diam)
-        # )
         # ##################################################
         # # Get remaining parameters and throughput values #
         # ##################################################
@@ -167,12 +152,10 @@ class Coronagraph:
         }
         dims = ["x psf offset (pix)", "y psf offset (pix)", "x (pix)", "y (pix)"]
         if path.exists():
-            self.logger.info(
-                "Loading data cube of spatially dependent PSFs, please hold..."
-            )
+            logger.info("Loading data cube of spatially dependent PSFs, please hold...")
             psfs_xr = xr.open_dataarray(path)
         else:
-            self.logger.info(
+            logger.info(
                 "Calculating data cube of spatially dependent PSFs, please hold..."
             )
             # Compute pixel grid.

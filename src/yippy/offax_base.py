@@ -1,7 +1,6 @@
 """Base class for all offax_psfs.fits files."""
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import astropy.io.fits as pyfits
 import astropy.units as u
@@ -13,8 +12,7 @@ from numpy.typing import NDArray
 from yippy.offax_psf import OneD, QuarterSymmetric, TwoD
 from yippy.util import convert_to_lod
 
-if TYPE_CHECKING:
-    from logging import Logger
+from .logger import logger
 
 
 class OffAx:
@@ -52,7 +50,6 @@ class OffAx:
     def __init__(
         self,
         yip_dir: Path,
-        logger: "Logger",
         offax_data_file: str,
         offax_offsets_file: str,
         pixel_scale: Quantity,

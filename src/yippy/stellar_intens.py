@@ -1,7 +1,6 @@
 """Module for handling stellar intensity data from stellar_intens files."""
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import astropy.io.fits as pyfits
 import numpy as np
@@ -10,9 +9,6 @@ from lod_unit import lod
 from scipy.interpolate import CubicSpline
 
 from .util import convert_to_lod
-
-if TYPE_CHECKING:
-    from logging import Logger
 
 
 class StellarIntens:
@@ -30,8 +26,6 @@ class StellarIntens:
     Args:
         yip_dir (Path):
             Path to the directory containing the yield input package (YIP).
-        logger (Logger):
-            Logger for logging information and debugging.
         stellar_intens_file (str):
             Filename of the FITS file containing the stellar intensity data.
         stellar_diam_file (str):
@@ -41,7 +35,6 @@ class StellarIntens:
     def __init__(
         self,
         yip_dir: Path,
-        logger: "Logger",
         stellar_intens_file: str,
         stellar_diam_file: str,
     ) -> None:
@@ -55,8 +48,6 @@ class StellarIntens:
             yip_dir (Path):
                 The directory where the stellar intensity and diameter FITS
                 files are located.
-            logger (Logger):
-                Logger for logging setup and processing steps.
             stellar_intens_file (str):
                 The filename of the FITS file containing unitless arrays of stellar
                 intensities.
