@@ -1,5 +1,5 @@
 <p align="center">
-  <img width = 100 src="https://raw.githubusercontent.com/coreyspohn/yippy/main/docs/_static/logo.png" alt="lod_unit logo" />
+  <img width = 250 src="https://raw.githubusercontent.com/coreyspohn/yippy/main/docs/_static/logo.png" alt="lod_unit logo" />
   <br><br>
 </p>
 

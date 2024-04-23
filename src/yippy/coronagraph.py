@@ -92,46 +92,6 @@ class Coronagraph:
         # datacube, it is only generated when needed.
         self.has_psf_datacube = False
 
-        # ############
-        # # Clean up #
-        # ############
-        # # Center coronagraph model so that image size is odd
-        # # and central pixel is center
-        # # TODO: Automate this process
-        # verified_coronagraph_models = [
-        #     "LUVOIR-A_APLC_10bw_smallFPM_2021-05-05_Dyn10pm-nostaticabb",
-        #     "LUVOIR-A_APLC_18bw_medFPM_2021-05-07_Dyn10pm-nostaticabb",
-        #     "LUVOIR-B-VC6_timeseries",
-        #     "LUVOIR-B_VC6_timeseries",
-        # ]
-        # if yip_path.parts[-1] in verified_coronagraph_models:
-        #     self.stellar_intens = self.stellar_intens[:, 1:, 1:]
-        #     self.offax_psf = self.offax_psf[:, :-1, 1:]
-        # else:
-        #     raise UserWarning(
-        #         "Please validate centering for this unknown coronagraph model"
-        #     )
-        #
-        # ##################################################
-        # # Get remaining parameters and throughput values #
-        # ##################################################
-        #
-        # # Gets the number of pixels in the image
-        # self.img_pixels = self.stellar_intens.shape[1] * u.pixel
-        # self.npixels = self.img_pixels.value.astype(int)
-        #
-        # # Photometric parameters.
-        # head = pyfits.getheader(Path(yip_path, "stellar_intens.fits"), 0)
-        #
-        # # fractional obscuration
-        # self.frac_obscured = head["OBSCURED"]
-        #
-        # # fractional bandpass
-        # self.frac_bandwidth = (head["MAXLAM"] - head["MINLAM"]) / head["LAMBDA"]
-        #
-        # # PSF datacube info
-        # self.has_psf_datacube = False
-
     def get_disk_psfs(self):
         """Load the disk image from a file or generate it if it doesn't exist."""
         # Load data cube of spatially dependent PSFs.

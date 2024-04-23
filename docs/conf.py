@@ -34,9 +34,15 @@ master_doc = "index"
 html_logo = "_static/logo.png"
 html_favicon = "_static/favicon.ico"
 html_title = "Yield Input Package Python Wrapper"
+html_sidebars = {"posts/*": ["sbt-sidebar-nav.html"]}
+
 html_theme_options = {
-    "path_to_docs": "docs",
     "repository_url": "https://www.github.com/CoreySpohn/yippy",
     "repository_branch": "main",
     "use_repository_button": True,
+    "show_toc_level": 2,
+}
+source_suffix = {
+    ".rst": "restructuredtext",
+    ".md": "markdown",
 }
