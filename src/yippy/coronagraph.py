@@ -62,9 +62,10 @@ class Coronagraph:
         ###################
         # Read input data #
         ###################
-        logger.info("Creating coronagraph")
-
         yip_path = Path(yip_path)
+
+        logger.info(f"Creating {yip_path.stem} coronagraph")
+
         self.name = yip_path.stem
         # Get header and calculate the lambda/D value
         stellar_intens_header = pyfits.getheader(Path(yip_path, stellar_intens_file), 0)

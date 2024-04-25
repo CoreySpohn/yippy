@@ -99,7 +99,7 @@ class OffAx:
         offsets_y = np.unique(offsets[:, 1])
 
         if len(offsets_x) == 1:
-            logger.info("Coronagraph is radially symmetric")
+            logger.info(f"{yip_dir.stem} is radially symmetric")
             type = "1d"
             # Instead of handling angles for 1dy, swap the x and y
             offsets_x, offsets_y = (offsets_y, offsets_x)
@@ -111,13 +111,13 @@ class OffAx:
                 )
             )
         elif len(offsets_y) == 1:
-            logger.info("Coronagraph is radially symmetric")
+            logger.info(f"{yip_dir.stem} is radially symmetric")
             type = "1d"
         elif np.min(offsets) >= 0 * lod:
-            logger.info("Coronagraph is quarterly symmetric")
+            logger.info(f"{yip_dir.stem} is quarterly symmetric")
             type = "2dq"
         else:
-            logger.info("Coronagraph response is full 2D")
+            logger.info(f"{yip_dir.stem} response is full 2D")
             type = "2df"
 
         # interpolate planet data depending on type
