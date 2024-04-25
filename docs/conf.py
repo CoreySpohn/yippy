@@ -15,6 +15,9 @@ extensions = [
     "autoapi.extension",
     "sphinx.ext.autodoc",
     "sphinx.ext.viewcode",
+    "myst_nb",
+    "sphinx.ext.mathjax",
+    "IPython.sphinxext.ipython_console_highlighting",
 ]
 
 templates_path = ["_templates"]
@@ -25,6 +28,8 @@ language = "Python"
 autoapi_dirs = ["../src"]
 autoapi_ignore = ["**/*version.py"]
 autodoc_typehints = "description"
+
+myst_enable_extensions = ["amsmath", "dollarmath"]
 
 # -- Options for HTML output -------------------------------------------------
 
@@ -46,3 +51,4 @@ source_suffix = {
     ".rst": "restructuredtext",
     ".md": "markdown",
 }
+nb_execution_mode = "cache"
