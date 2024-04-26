@@ -15,12 +15,11 @@ from .logger import logger
 class HeaderData:
     """A dataclass for storing the header data with units attached.
 
-    I think this may be a useful system, however please not that this has not
-    been tested considerably. This is just a suggestion for a more robust way
-    to keep the FITS header data attached to the coronagraph. Right now, the
-    header data is loaded by Coronagraph from the stellar_intens file. This may
-    make more sense if Offax, StellarIntens, and SkyTrans each load their own
-    header.
+    I think this will be a useful system, however this has not been tested
+    considerably. This is just a suggestion for a more robust way to keep the
+    FITS header data attached to the coronagraph. Right now, the header data is
+    loaded by Coronagraph from the stellar_intens file. This may make more
+    sense if Offax, StellarIntens, and SkyTrans each load their own header.
     """
 
     simple: bool
