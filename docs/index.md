@@ -9,7 +9,7 @@
 modules/off_axis_psf.md
 modules/stellar_intensity_maps.md
 modules/sky_transmission_maps.md
-examples.md
+examples/Basics.ipynb
 ```
 ```{toctree}
 :maxdepth: 1

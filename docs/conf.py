@@ -11,11 +11,10 @@ release = yippy.__version__
 # -- General configuration ---------------------------------------------------
 
 extensions = [
-    "myst_parser",
+    "myst_nb",
     "autoapi.extension",
     "sphinx.ext.autodoc",
     "sphinx.ext.viewcode",
-    "myst_nb",
     "sphinx.ext.mathjax",
     "IPython.sphinxext.ipython_console_highlighting",
 ]
@@ -49,6 +48,6 @@ html_theme_options = {
 }
 source_suffix = {
     ".rst": "restructuredtext",
-    ".md": "markdown",
+    ".md": "myst-nb",
 }
 nb_execution_mode = "cache"
