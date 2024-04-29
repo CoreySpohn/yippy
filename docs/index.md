@@ -7,6 +7,7 @@
 ```{toctree}
 :maxdepth: 2
 examples/Basics.ipynb
+examples/QuarterSymmetric.ipynb
 ```
 ```{toctree}
 :maxdepth: 1
