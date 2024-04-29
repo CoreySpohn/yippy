@@ -50,4 +50,4 @@ source_suffix = {
     ".rst": "restructuredtext",
     ".md": "myst-nb",
 }
-nb_execution_mode = "auto"
+nb_execution_mode = "cache"
