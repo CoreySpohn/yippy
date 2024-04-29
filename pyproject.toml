@@ -36,7 +36,7 @@ path = "README.md"
 [project.optional-dependencies]
 docs = [
   "sphinx",
-  "myst-parser",
+  "myst-nb",
   "sphinx-book-theme",
   "sphinx-autoapi",
   "sphinx_autodoc_typehints",
