@@ -46,6 +46,9 @@ html_theme_options = {
     "use_repository_button": True,
     "show_toc_level": 2,
 }
+html_context = {
+    "default_mode": "dark",
+}
 source_suffix = {
     ".rst": "restructuredtext",
     ".md": "myst-nb",
