@@ -40,6 +40,7 @@ docs = [
   "sphinx-book-theme",
   "sphinx-autoapi",
   "sphinx_autodoc_typehints",
+  "matplotlib",
 ]
 test = ["nox", "pytest", "hypothesis", "pytest-cov"]
 
