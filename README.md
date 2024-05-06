@@ -37,7 +37,7 @@ offaxis_psf = aplc.offax(**point_source_position)
 
 # On-axis intensity map with a stellar diameter
 stellar_diameter = 1*lod
-stellar_intensity = aplc.stellar_intensity()
+stellar_intensity = aplc.stellar_intensity(stellar_diameter)
 
 # Sky transmission map for extended sources
 sky_trans = aplc.sky_trans()
