@@ -7,7 +7,10 @@
 ```{toctree}
 :maxdepth: 2
 examples/Basics.ipynb
+examples/RadiallySymmetric.ipynb
 examples/QuarterSymmetric.ipynb
+examples/StellarIntens.ipynb
+examples/SkyTrans.ipynb
 ```
 ```{toctree}
 :maxdepth: 1
