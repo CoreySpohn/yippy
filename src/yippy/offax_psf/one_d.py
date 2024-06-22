@@ -74,14 +74,13 @@ class OneD:
         # Get the rotation angle
         rot_angle = np.arctan2(y, x)
 
-        # Interpolate the PSF to the given separation
-        one_d_psf = self.one_d_interp(sep)
-
         # Check if we need to rotate the PSF
         if rot_angle.value != 0.0:
+            # Interpolate the PSF to the given separation
+            _psf = self.log_interp(sep)
             psf = np.exp(
                 rotate(
-                    np.log(one_d_psf),
+                    _psf,
                     -rot_angle.to(u.deg).value,
                     reshape=False,
                     mode="nearest",
@@ -89,5 +88,6 @@ class OneD:
                 )
             )
         else:
-            psf = one_d_psf
+            # Interpolate the PSF to the given separation
+            psf = self.one_d_interp(sep)
         return psf
