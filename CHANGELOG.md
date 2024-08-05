@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/CoreySpohn/yippy/compare/v1.3.0...v1.3.1) (2024-08-05)
+
+
+### Bug Fixes
+
+* **main:** Improve the one D PSF to only take the log if necessary ([845fdf5](https://github.com/CoreySpohn/yippy/commit/845fdf53d759894ae17b40e1fff1b689acbb49a8))
+
 ## [1.3.0](https://github.com/CoreySpohn/yippy/compare/v1.2.0...v1.3.0) (2024-04-23)
 
 
