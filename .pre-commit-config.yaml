@@ -6,7 +6,7 @@ repos:
       - id: name-tests-test
       - id: end-of-file-fixer
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.5.4
+    rev: v0.5.7
     hooks:
       # Run the linter.
       - id: ruff
@@ -14,7 +14,7 @@ repos:
       # Run the formatter.
       - id: ruff-format
   - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v3.3.0
+    rev: v3.4.0
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]
