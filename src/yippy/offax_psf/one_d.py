@@ -1,11 +1,10 @@
 """This module handles one dimensional offax_psf.fits files."""
 
-import astropy.units as u
 import numpy as np
 from astropy.units import Quantity
 from numpy.typing import NDArray
-from scipy.interpolate import CubicSpline
-from scipy.ndimage import rotate
+
+from yippy.logger import logger
 
 
 class OneD:
@@ -43,51 +42,64 @@ class OneD:
         self.max_offset = offsets[-1]
         self.psf_shape = psfs.shape[1:]
 
-        # Interpolate the PSFs in log space to avoid negative values
-        self.log_interp = CubicSpline(offsets, np.log(psfs))
+        self.offsets = offsets
+        self.psfs = psfs
 
-        # Define the one-d interpolation function
-        self.one_d_interp = lambda x: np.exp(self.log_interp(x))
+    def get_psf_and_transform(self, x: Quantity, y: Quantity):
+        """For a given position, return the nearest PSF and interpolation information.
 
-    def __call__(self, x: Quantity, y: Quantity):
-        """Calculates and returns the PSF at the specified x, y position in lambda/D.
-
-        If the computed separation from the origin exceeds the interpolation range,
-        a zero-filled array matching the PSF shape is returned. Otherwise, the PSF is
-        interpolated and rotated to the correct angle based on its position.
+        This function computes the nearest PSF based on the provided (x, y)
+        coordinates. It calculates the separation and retrieves the closest PSF
+        available in the dataset. Additionally, it returns the necessary shift
+        in x, y (with y always being 0 for one-dimensional PSF offsets), and
+        the rotation angle required to align the PSF correctly for the given
+        coordinates.
 
         Args:
             x (Quantity):
-                x position in lambda/D.
+                The x-coordinate of the position in astropy units.
             y (Quantity):
-                y position in lambda/D.
+                The y-coordinate of the position in astropy units.
 
         Returns:
-            NDArray:
-                The interpolated and possibly rotated PSF array at the given position.
+            Tuple[np.ndarray, float, float, float]:
+                - image (np.ndarray):
+                    The nearest PSF image corresponding to the given separation.
+                - x_shift (float):
+                    The shift in the x direction required to align the PSF to
+                    the desired position.
+                - y_shift (float):
+                    The shift in the y direction (always 0 in this implementation).
+                - rot_angle (float):
+                    The angle by which the PSF should be rotated to match the
+                    (x, y) coordinates.
+
+        Notes:
+            If the separation is outside the valid range of PSFs, the function
+            returns a blank image with the same shape as the PSFs, along with
+            shifts and rotation angles set to 0.
+
         """
+        # Get the closest PSF to the given separation
         sep = np.sqrt(x**2 + y**2)
         if sep < self.min_offset or sep > self.max_offset:
             # If the separation is outside the range of the PSFs, return zeros
-            return np.zeros(self.psf_shape)
+            logger.warning(
+                f"Requested PSF separation ({sep:.2f}) "
+                "is outside the provided PSF offsets "
+                f"({self.min_offset:.2f}, {self.max_offset:.2f})."
+                " Returning a blank image."
+            )
+            return np.zeros(self.psf_shape), 0, 0, 0
 
-        # Get the rotation angle
+        # Get the distance to shift the PSF in lam/D
+        offset_diffs = sep - self.offsets
+
+        nearest_offset = np.argmin(np.abs(offset_diffs))
+        x_shift = offset_diffs[nearest_offset]
+        image = self.psfs[nearest_offset]
+
         rot_angle = np.arctan2(y, x)
 
-        # Check if we need to rotate the PSF
-        if rot_angle.value != 0.0:
-            # Interpolate the PSF to the given separation
-            _psf = self.log_interp(sep)
-            psf = np.exp(
-                rotate(
-                    _psf,
-                    -rot_angle.to(u.deg).value,
-                    reshape=False,
-                    mode="nearest",
-                    order=5,
-                )
-            )
-        else:
-            # Interpolate the PSF to the given separation
-            psf = self.one_d_interp(sep)
-        return psf
+        # y shift is always 0 for the one dimensional PSF offsets
+        return image, x_shift, 0, rot_angle

@@ -190,16 +190,22 @@ def fft_rotate(image, rot_deg):
 
     image = rot90_helper(image, n_rot)
 
-    theta = np.deg2rad(rot_deg)
-    a = np.tan(theta / 2)
-    b = -np.sin(theta)
+    if rot_deg != 0.0:
+        theta = np.deg2rad(rot_deg)
+        a = np.tan(theta / 2)
+        b = -np.sin(theta)
 
-    # Rotate using three shears
-    sx = fft_shear(image, a, axis=1)
-    sxy = fft_shear(sx, b, axis=0)
-    sxyx = fft_shear(sxy, a, axis=1)
+        # Rotate using three shears
+        # s_x
+        image = fft_shear(image, a, axis=1)
 
-    return sxyx
+        # s_yx
+        image = fft_shear(image, b, axis=0)
+
+        # s_xyx
+        image = fft_shear(image, a, axis=1)
+
+    return image
 
 
 def rot90_helper(image, n_rot):

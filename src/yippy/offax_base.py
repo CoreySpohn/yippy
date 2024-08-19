@@ -10,7 +10,7 @@ from lod_unit import lod
 from numpy.typing import NDArray
 
 from yippy.offax_psf import OneD, QuarterSymmetric, TwoD
-from yippy.util import convert_to_lod
+from yippy.util import convert_to_lod, fft_rotate, fft_shift
 
 from .logger import logger
 
@@ -166,4 +166,17 @@ class OffAx:
         if y.unit != lod:
             y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
 
-        return self.psf(x, y)
+        # Get the PSF and necessary interpolation
+        img, x_shift, y_shift, rot = self.psf.get_psf_and_transform(x, y)
+        # Get pixel values
+        x_shift = (x_shift / self.pixel_scale).value
+        y_shift = (y_shift / self.pixel_scale).value
+        rot = rot.to(u.deg).value
+
+        # Apply the shift and rotation
+        if x_shift != 0 or y_shift != 0:
+            img = fft_shift(img, x_shift, y_shift)
+        if rot != 0:
+            img = fft_rotate(img, rot)
+
+        return img
