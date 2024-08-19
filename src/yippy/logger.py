@@ -1,6 +1,11 @@
-"""Logging module for yippy."""
+"""Logging module."""
 
 import logging
+
+lib_name = "yippy"
+# See https://gist.github.com/fnky/458719343aabd01cfb17a3a4f7296797 for
+# info on the color codes
+lib_color = "229"
 
 
 # ANSI escape sequences for colors
@@ -16,7 +21,7 @@ class ColorCodes:
     MAGENTA = "\033[35m"
     CYAN = "\033[36m"
     WHITE = "\033[37m"
-    LIB = "\033[38;5;229m"
+    LIB = f"\033[38;5;{lib_color}m"
 
 
 # Custom formatter to add colors
@@ -35,12 +40,10 @@ class ColorFormatter(logging.Formatter):
         """Format the log message with colors."""
         log = super().format(record)
         color = self.COLORS.get(record.levelno, ColorCodes.WHITE)
-        # See https://gist.github.com/fnky/458719343aabd01cfb17a3a4f7296797 for
-        # info on the color codes
-        return f"{ColorCodes.LIB}\033[48;5;16m[yippy]\033[0m {color}{log}"
+        return f"{ColorCodes.LIB}\033[48;5;16m[{lib_name}]\033[0m {color}{log}"
 
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(f"{lib_name}")
 
 shell_handler = logging.StreamHandler()
 file_handler = logging.FileHandler("debug.log")
@@ -51,7 +54,7 @@ file_handler.setLevel(logging.DEBUG)
 
 shell_fmt = "%(levelname)s [%(asctime)s] \033[0m%(message)s"
 file_fmt = (
-    "[yippy] %(levelname)s %(asctime)s [%(filename)s:"
+    f"[{lib_name}] %(levelname)s %(asctime)s [%(filename)s:"
     "%(funcName)s:%(lineno)d] %(message)s"
 )
 shell_formatter = ColorFormatter(shell_fmt)
@@ -63,4 +66,4 @@ file_handler.setFormatter(file_formatter)
 logger.addHandler(shell_handler)
 logger.addHandler(file_handler)
 
-logger.propagate = False
+logger.propagate = True
