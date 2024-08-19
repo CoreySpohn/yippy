@@ -92,6 +92,7 @@ class Coronagraph:
         # y psf offset, x, y). Given the computational cost of generating this
         # datacube, it is only generated when needed.
         self.has_psf_datacube = False
+        logger.info(f"Created {yip_path.stem}")
 
     def get_disk_psfs(self):
         """Load the disk image from a file or generate it if it doesn't exist."""
