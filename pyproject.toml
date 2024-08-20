@@ -44,28 +44,11 @@ docs = [
 ]
 test = ["nox", "pytest", "hypothesis", "pytest-cov"]
 
+[tool.ruff]
+exclude = ["docs"]
+
 [tool.ruff.lint]
 select = ["D", "E", "F", "I"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
-
-[tool.pyright]
-include = ["src/"]
-exclude = ["tests/", "**/__pycache__", "**/*.venv", "src/**/data"]
-typeCheckingMode = "basic"
-venvPath = "."
-venv = ".venv"
-reportMissingImports = false
-reportMissingTypeStubs = false
-reportMissingModuleSource = true
-reportMissingParameterType = true
-reportMissingReturnType = true
-reportGeneralTypeIssues = true
-reportUnknownMemberType = "none"
-reportUnknownParameterType = false
-reportUnknownArgumentType = false
-reportUnknownVariableType = false
-reportUnknownLambdaType = false
-reportUnboundVariable = true
-reportAttributeAccessIssue = false
