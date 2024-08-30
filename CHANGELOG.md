@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.4.0](https://github.com/CoreySpohn/yippy/compare/v1.3.0...v1.4.0) (2024-08-30)
+
+
+### Features
+
+* Add expressive logger ([4eec73c](https://github.com/CoreySpohn/yippy/commit/4eec73c74168b1afd8246919ca05d43cf9e6bb7f))
+* Add Fourier interpolation utility functions ([d023e1c](https://github.com/CoreySpohn/yippy/commit/d023e1c650d674829c4117738b05f6816ff2762f))
+* Implement FFT based interpolation and rotation ([8ecac66](https://github.com/CoreySpohn/yippy/commit/8ecac660316e9f003f27d997874fc0ebcd5202e9))
+* Implemented fft interpolation in the One-D case ([5309cb6](https://github.com/CoreySpohn/yippy/commit/5309cb64ef29819831aad53723b344a3132c3ebc))
+
+
+### Bug Fixes
+
+* Fix the import of the logger ([4021431](https://github.com/CoreySpohn/yippy/commit/4021431b9a131fd703b3fc154c40f394c145dbf7))
+* **main:** Improve the one D PSF to only take the log if necessary ([845fdf5](https://github.com/CoreySpohn/yippy/commit/845fdf53d759894ae17b40e1fff1b689acbb49a8))
+
 ## [1.3.0](https://github.com/CoreySpohn/yippy/compare/v1.2.0...v1.3.0) (2024-04-23)
 
 
