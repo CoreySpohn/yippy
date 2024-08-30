@@ -360,3 +360,41 @@ def decompose_angle(angle):
         n_rot = 0
 
     return adjusted_angle, n_rot
+
+
+def create_shift_mask(psf, shift_x, shift_y, fill_val=1):
+    """Create a mask to identify valid pixels to average.
+
+    This function is useful because when the PSF is shifted there are empty
+    pixels, since they were outside the initial image, and should not be
+    included in the final average.
+
+    Args:
+        psf (np.ndarray):
+            The PSF image to shift.
+        shift_x (float):
+            The shift in the x direction.
+        shift_y (float):
+            The shift in the y direction.
+        fill_val (float, optional):
+            The value to fill the mask with.
+    """
+    mask = np.full_like(psf, fill_val)
+
+    # Handle x-direction shifting
+    if shift_x > 0:
+        # Zero out the left side
+        mask[:, : int(np.ceil(shift_x))] = 0
+    elif shift_x < 0:
+        # Zero out the right side
+        mask[:, int(np.floor(shift_x)) :] = 0
+
+    # Handle y-direction shifting
+    if shift_y > 0:
+        # Zero out the bottom side
+        mask[: int(np.ceil(shift_y)), :] = 0
+    elif shift_y < 0:
+        # Zero out the top side
+        mask[int(np.floor(shift_y)) :, :] = 0
+
+    return mask

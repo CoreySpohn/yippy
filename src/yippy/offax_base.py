@@ -9,8 +9,7 @@ from astropy.units import Quantity
 from lod_unit import lod
 from numpy.typing import NDArray
 
-from yippy.offax_psf import OneD, QuarterSymmetric, TwoD
-from yippy.util import convert_to_lod, fft_rotate, fft_shift
+from yippy.util import convert_to_lod, create_shift_mask, fft_rotate, fft_shift
 
 from .logger import logger
 
@@ -71,7 +70,7 @@ class OffAx:
         self.center_y = psfs.shape[2] / 2 * u.pix
 
         # Load the offset list, which is in units of lambda/D
-        offsets = pyfits.getdata(Path(yip_dir, offax_offsets_file), 0) * lod
+        offsets = pyfits.getdata(Path(yip_dir, offax_offsets_file), 0)
 
         # Check whether offsets are given as 1D or 2D
         one_d_offsets = len(offsets.shape) == 1
@@ -100,9 +99,10 @@ class OffAx:
 
         if len(offsets_x) == 1:
             logger.info(f"{yip_dir.stem} is radially symmetric")
-            type = "1d"
+            self.type = "1d"
             # Instead of handling angles for 1dy, swap the x and y
             offsets_x, offsets_y = (offsets_y, offsets_x)
+            offsets = np.vstack((offsets_y, offsets_x)).T
             raise NotImplementedError(
                 (
                     "Verify that the PSFs are correct for this case!"
@@ -112,22 +112,196 @@ class OffAx:
             )
         elif len(offsets_y) == 1:
             logger.info(f"{yip_dir.stem} is radially symmetric")
-            type = "1d"
-        elif np.min(offsets) >= 0 * lod:
+            self.type = "1d"
+        elif np.min(offsets) >= 0:
             logger.info(f"{yip_dir.stem} is quarterly symmetric")
-            type = "2dq"
+            self.type = "2dq"
+            # Check if 0 is included
+            if 0 not in offsets_x:
+                # Need to mirror the PSFs across the x axis for the interpolation
+                min_x = np.min(offsets_x)
+                # Add the mirrored offset to the original offsets
+                offsets_x = np.insert(offsets_x, 0, -min_x)
+
+                # Get all the PSFs that are at the minimum x value
+                min_x_psfs = psfs[offsets[:, 0] == min_x]
+
+                # Add the mirrored PSFs to the original PSFs
+                psfs = np.insert(psfs, 0, np.flip(min_x_psfs, axis=2), axis=0)
+
+                # Add the mirrored offset to the original offsets
+                new_offsets = np.array(np.meshgrid(-min_x, offsets_y)).T.reshape(-1, 2)
+
+                # Create an array of negative_min_x with the y offsets
+                offsets = np.insert(offsets, 0, new_offsets, axis=0)
+            if 0 not in offsets_y:
+                # Need to mirror the PSFs across the y axis for the interpolation
+                min_y = np.min(offsets_y)
+                offsets_y = np.insert(offsets_y, 0, -min_y)
+
+                # Get all the PSFs that are at the minimum y value
+                min_y_psfs = psfs[offsets[:, 1] == min_y]
+
+                # Add the mirrored PSFs to the original PSFs
+                psfs = np.insert(psfs, 0, np.flip(min_y_psfs, axis=1), axis=0)
+
+                # Add the mirrored offset to the original offsets
+                new_offsets = np.array(np.meshgrid(offsets_x, -min_y)).T.reshape(-1, 2)
+
+                # Create an array of negative_min_x with the y offsets
+                offsets = np.insert(offsets, 0, new_offsets, axis=0)
         else:
             logger.info(f"{yip_dir.stem} response is full 2D")
-            type = "2df"
+            self.type = "2df"
 
-        # interpolate planet data depending on type
-        if "1" in type:
-            # Always set up to interpolate along the x axis
-            self.psf = OneD(psfs, offsets_x)
-        elif type == "2dq":
-            self.psf = QuarterSymmetric(psfs, offsets)
-        elif type == "2df":
-            self.psf = TwoD(psfs, offsets_x, offsets_y)
+        # Initialize the reshaped PSFs array to allow us to index by the offsets
+        self.reshaped_psfs = np.empty((len(offsets_x), len(offsets_y), *psfs.shape[1:]))
+        x_indices = np.searchsorted(offsets_x, offsets[:, 0])
+        y_indices = np.searchsorted(offsets_y, offsets[:, 1])
+        self.reshaped_psfs[x_indices, y_indices] = psfs
+
+        self.x_offsets = offsets_x
+        self.y_offsets = offsets_y
+        self.x_range = np.array([self.x_offsets[0], self.x_offsets[-1]])
+        self.y_range = np.array([self.y_offsets[0], self.y_offsets[-1]])
+
+    def create_psf(self, x: float, y: float):
+        """Creates and returns the PSF at the specified off-axis position.
+
+        Interpolates and returns the Point Spread Function (PSF) at the specified
+        off-axis position (x, y). If the exact (x, y) position matches one of the
+        PSFs in the YIP, that PSF is returned directly. Otherwise, the PSFs
+        from the surrounding positions are combined using Gaussian weighting and
+        Fourier interpolation to produce an interpolated PSF.
+
+        Args:
+            x (float):
+                The x-coordinate of the off-axis position.
+            y (float):
+                The y-coordinate of the off-axis position.
+
+        Returns:
+            np.ndarray:
+                The interpolated PSF corresponding to the input (x, y) position.
+
+        Notes:
+            - If `self.type` is "1d", the (x, y) position is converted to a
+            radial separation and angle for interpolation.
+            - If `self.type` is "2dq", the (x, y) position is mirrored to the
+            first quadrant, and the PSF is flipped accordingly after
+            interpolation.
+            - Gaussian weighting is used to combine the nearest PSFs when the
+            exact (x, y) position does not match any precomputed PSF. The
+            weighting is based on the distance from the input position.
+            - The PSFs are shifted to align with the input position before
+            combining, and the final PSF is normalized by the cumulative weight
+            for each pixel.
+
+        """
+        # Set default values
+        rot, flip_lr, flip_ud = 0, False, False
+
+        # Check for exact matches
+        if x in self.x_offsets and y in self.y_offsets:
+            x_ind = np.searchsorted(self.x_offsets, x)
+            y_ind = np.searchsorted(self.y_offsets, y)
+            return self.reshaped_psfs[x_ind, y_ind]
+
+        # Translate position based on type
+        if self.type == "1d":
+            sep = np.sqrt(x**2 + y**2)
+            rot = np.rad2deg(np.arctan2(y, x))
+            _x, _y = sep, 0
+        elif self.type == "2dq":
+            flip_lr, flip_ud = x < 0, y < 0
+            _x, _y = abs(x), abs(y)
+        else:
+            _x, _y = x, y
+
+        # Check if the converted position is an exact match
+        if _x in self.x_offsets and _y in self.y_offsets:
+            # If the x and y values are exact matches we can get the PSF directly
+            # and then apply any necessary flips or rotations
+            psf = self.reshaped_psfs[
+                np.searchsorted(self.x_offsets, _x), np.searchsorted(self.y_offsets, _y)
+            ]
+            if flip_lr:
+                psf = np.fliplr(psf)
+            if flip_ud:
+                psf = np.flipud(psf)
+            if rot != 0:
+                psf = fft_rotate(psf, rot)
+            return psf
+
+        # Get indices of nearest PSFs, in x and y directions
+        x_match = _x in self.x_offsets
+        _x_search = np.searchsorted(self.x_offsets, _x)
+        if x_match:
+            # If the x value is an exact match, we only need one index
+            x_inds = _x_search.reshape(-1)
+        else:
+            x_inds = np.array([_x_search - 1, _x_search])
+
+        y_match = _y in self.y_offsets
+        _y_search = np.searchsorted(self.y_offsets, _y)
+        if y_match:
+            # If the y value is an exact match, we only need one index
+            y_inds = _y_search.reshape(-1)
+        else:
+            y_inds = np.array([_y_search - 1, _y_search])
+
+        x_vals, y_vals = self.x_offsets[x_inds], self.y_offsets[y_inds]
+        # Get the indices of the nearest PSFs to the input (x, y)
+        near_inds = np.array(np.meshgrid(x_inds, y_inds)).T.reshape(-1, 2)
+
+        # Get the (x, y) offsets of the nearest PSFs to the input (x, y)
+        near_offsets = np.array(np.meshgrid(x_vals, y_vals)).T.reshape(-1, 2)
+
+        # Get the PSFs at the nearest offsets
+        near_psfs = self.reshaped_psfs[near_inds[:, 0], near_inds[:, 1]]
+
+        # Get the shift (in pixels) required to align with the input (x, y)
+        near_shifts = (np.array([_x, _y]) - near_offsets) / self.pixel_scale.value
+
+        # Calculate the distance of each PSF from the input (x, y)
+        near_diffs = np.linalg.norm(near_shifts, axis=1)
+
+        # Gaussian weighting
+        sigma = 1.0
+        weights = np.exp(-(near_diffs**2) / (2 * sigma**2))
+
+        # Normalize the weights
+        weights /= weights.sum()
+
+        # Initialize the PSF array
+        psf = np.zeros_like(near_psfs[0])
+
+        # Initialize the weight array
+        # This weight system is used because shifting a PSF right by one pixel
+        # will leave a blank pixel on the left side of the image. The weight
+        # array keeps track of which PSFs have contributions for each pixel.
+        weight_array = np.zeros_like(psf)
+
+        # Combine the PSFs
+        for i, near_psf in enumerate(near_psfs):
+            shifted_psf = fft_shift(near_psf, *near_shifts[i])
+            weight_mask = create_shift_mask(near_psf, *near_shifts[i], weights[i])
+            # Add the weighted PSF to the total PSF
+            psf += weight_mask * shifted_psf
+            # Keep track of the weight for each pixel
+            weight_array += weight_mask
+        # Divide each pixel by its weight to get the final PSF
+        psf /= weight_array
+
+        # Apply any necessary flips or rotations
+        if flip_lr:
+            psf = np.fliplr(psf)
+        if flip_ud:
+            psf = np.flipud(psf)
+        if rot != 0:
+            psf = fft_rotate(psf, rot)
+
+        return psf
 
     def __call__(
         self, x: Quantity, y: Quantity, lam=None, D=None, dist=None
@@ -166,17 +340,6 @@ class OffAx:
         if y.unit != lod:
             y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
 
-        # Get the PSF and necessary interpolation
-        img, x_shift, y_shift, rot = self.psf.get_psf_and_transform(x, y)
-        # Get pixel values
-        x_shift = (x_shift / self.pixel_scale).value
-        y_shift = (y_shift / self.pixel_scale).value
-        rot = rot.to(u.deg).value
-
-        # Apply the shift and rotation
-        if x_shift != 0 or y_shift != 0:
-            img = fft_shift(img, x_shift, y_shift)
-        if rot != 0:
-            img = fft_rotate(img, rot)
+        img = self.create_psf(x.value, y.value)
 
         return img
