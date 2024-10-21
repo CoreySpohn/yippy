@@ -6,7 +6,14 @@ build-backend = "hatchling.build"
 name = "yippy"
 authors = [{ name = "Corey Spohn", email = "corey.a.spohn@nasa.gov" }]
 description = "A minimal wrapper to create a coronagraph object from a yield input package"
-dependencies = ["astropy", "scipy", "lod_unit", "tqdm", "xarray"]
+dependencies = [
+    "astropy",
+    "scipy",
+    "lod_unit",
+    "tqdm",
+    "xarray",
+    "pre-commit>=4.0.1",
+]
 license = { file = "LICENSE" }
 dynamic = ['readme', 'version']
 requires-python = ">=3.9"
@@ -49,23 +56,3 @@ select = ["D", "E", "F", "I"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
-
-[tool.pyright]
-include = ["src/"]
-exclude = ["tests/", "**/__pycache__", "**/*.venv", "src/**/data"]
-typeCheckingMode = "basic"
-venvPath = "."
-venv = ".venv"
-reportMissingImports = false
-reportMissingTypeStubs = false
-reportMissingModuleSource = true
-reportMissingParameterType = true
-reportMissingReturnType = true
-reportGeneralTypeIssues = true
-reportUnknownMemberType = "none"
-reportUnknownParameterType = false
-reportUnknownArgumentType = false
-reportUnknownVariableType = false
-reportUnknownLambdaType = false
-reportUnboundVariable = true
-reportAttributeAccessIssue = false
