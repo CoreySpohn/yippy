@@ -15,7 +15,7 @@ from .logger import logger
 
 
 class OffAx:
-    """Base class for handling off-axis PSFs.
+    """Class for handling off-axis PSFs in pure Python.
 
     This class loads and processes PSF data from the yield input package (YIP).
     It currently supports oneD and quater symmetric PSF YIPs. The primary use
@@ -334,12 +334,18 @@ class OffAx:
             NDArray:
                 The PSF at the given x/y position
         """
-        # Convert the x and y positions to lambda/D if they are in pixels
-        if x.unit != lod:
-            x = convert_to_lod(x, self.center_x, self.pixel_scale, lam, D, dist)
-        if y.unit != lod:
-            y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
+        if isinstance(x, Quantity):
+            # Convert the x and y positions to lambda/D if they are in pixels
+            if x.unit != lod:
+                x = convert_to_lod(x, self.center_x, self.pixel_scale, lam, D, dist)
+            else:
+                x = x.value
+        if isinstance(y, Quantity):
+            if y.unit != lod:
+                y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
+            else:
+                y = y.value
 
-        img = self.create_psf(x.value, y.value)
+        img = self.create_psf(x, y)
 
         return img
