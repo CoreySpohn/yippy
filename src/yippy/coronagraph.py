@@ -1,12 +1,10 @@
 """Base coronagraph class."""
 
-from itertools import product
 from pathlib import Path
 
 import astropy.io.fits as pyfits
 import astropy.units as u
 import numpy as np
-import xarray as xr
 from tqdm import tqdm
 
 from .header import HeaderData
@@ -36,6 +34,8 @@ class Coronagraph:
         offax_data_file: str = "offax_psf.fits",
         offax_offsets_file: str = "offax_psf_offset_list.fits",
         sky_trans_file: str = "sky_trans.fits",
+        x_symmetric: bool = True,
+        y_symmetric: bool = False,
     ):
         """Initialize the Coronagraph object.
 
@@ -62,6 +62,10 @@ class Coronagraph:
                 offax_psf_offset_list.fits
             sky_trans_file (str):
                 Name of the sky transmission data file. Default is sky_trans.fits.
+            x_symmetric (bool):
+                Whether off-axis PSFs are symmetric about the x-axis. Default is True.
+            y_symmetric (bool):
+                Whether off-axis PSFs are symmetric about the y-axis. Default is False.
         """
         ###################
         # Read input data #
@@ -88,11 +92,21 @@ class Coronagraph:
         # Offaxis PSF of the planet as function of separation from the star
         if not use_jax:
             self.offax = OffAx(
-                yip_path, offax_data_file, offax_offsets_file, self.pixel_scale
+                yip_path,
+                offax_data_file,
+                offax_offsets_file,
+                self.pixel_scale,
+                x_symmetric,
+                y_symmetric,
             )
         else:
             self.offax = OffJAX(
-                yip_path, offax_data_file, offax_offsets_file, self.pixel_scale
+                yip_path,
+                offax_data_file,
+                offax_offsets_file,
+                self.pixel_scale,
+                x_symmetric,
+                y_symmetric,
             )
 
         # Get the sky_trans mask
@@ -110,82 +124,70 @@ class Coronagraph:
         self.npixels = self.psf_shape[0]
         logger.info(f"Created {yip_path.stem}")
 
-    def create_offax_datacube(self):
+    def create_offax_datacube(self, batch_size=512):
         """Load the disk image from a file or generate it if it doesn't exist."""
         # Load data cube of spatially dependent PSFs.
-        path = self.yip_path / "offax_datacube.nc"
+        # path = self.yip_path / "offax_datacube.nc"
+        #
+        # coords = {
+        #     "x psf offset (pix)": np.arange(self.psf_shape[0]),
+        #     "y psf offset (pix)": np.arange(self.psf_shape[1]),
+        #     "x (pix)": np.arange(self.psf_shape[0]),
+        #     "y (pix)": np.arange(self.psf_shape[1]),
+        # }
+        # dims = ["x psf offset (pix)", "y psf offset (pix)", "x (pix)", "y (pix)"]
+        # if path.exists():
+        #   logger.info("Loading data cube of spatially dependent PSFs, please hold")
+        #     psfs_xr = xr.open_dataarray(path)
+        # else:
+        # logger.info("Calculating data cube of spatially dependent PSFs, please hold")
+        # Compute pixel grid.
+        # Compute pixel grid contrast.
+        psfs_shape = (*self.psf_shape, *self.psf_shape)
+        psfs = np.zeros(psfs_shape, dtype=np.float32)
+        pixel_lod = (
+            (np.arange(self.npixels) - ((self.npixels - 1) // 2))
+            * u.pixel
+            * self.pixel_scale
+        ).value
 
-        coords = {
-            "x psf offset (pix)": np.arange(self.psf_shape[0]),
-            "y psf offset (pix)": np.arange(self.psf_shape[1]),
-            "x (pix)": np.arange(self.psf_shape[0]),
-            "y (pix)": np.arange(self.psf_shape[1]),
-        }
-        dims = ["x psf offset (pix)", "y psf offset (pix)", "x (pix)", "y (pix)"]
-        if path.exists():
-            logger.info("Loading data cube of spatially dependent PSFs, please hold...")
-            psfs_xr = xr.open_dataarray(path)
-        else:
-            logger.info(
-                "Calculating data cube of spatially dependent PSFs, please hold..."
-            )
-            # Compute pixel grid.
-            # Compute pixel grid contrast.
-            psfs_shape = (*self.psf_shape, *self.psf_shape)
-            psfs = np.zeros(psfs_shape, dtype=np.float32)
-            pixel_lod = (
-                (np.arange(self.npixels) - ((self.npixels - 1) // 2))
-                * u.pixel
-                * self.pixel_scale
-            ).value
+        # x_lod, y_lod = np.meshgrid(pixel_lod, pixel_lod, indexing="xy")
+        # npsfs = np.prod(self.psf_shape)
+        # pb = tqdm(total=npsfs, desc="Computing datacube of PSFs at every pixel")
 
-            # x_lod, y_lod = np.meshgrid(pixel_lod, pixel_lod, indexing="xy")
-            npsfs = np.prod(self.psf_shape)
-            pb = tqdm(total=npsfs, desc="Computing datacube of PSFs at every pixel")
+        # Note: intention is that i value maps to x offset and j value maps
+        # to y offset
 
-            # Note: intention is that i value maps to x offset and j value maps
-            # to y offset
+        x_lod, y_lod = np.meshgrid(pixel_lod, pixel_lod, indexing="xy")
+        points = np.column_stack((x_lod.flatten(), y_lod.flatten()))
+        n_points = points.shape[0]
 
-            pix_inds = np.arange(self.npixels)
+        logger.info("Calculating data cube of spatially dependent PSFs in batches...")
+        with tqdm(total=n_points, desc="Computing PSFs") as pb:
+            for i in range(0, n_points, batch_size):
+                # Select the current batch, and calculate in 64-bit
+                batch_points = points[i : i + batch_size].astype(np.float64)
+                batch_psfs = self.offax(batch_points[:, 0], batch_points[:, 1])
 
-            for (i, x), (j, y) in product(
-                zip(pix_inds, pixel_lod), zip(pix_inds, pixel_lod)
-            ):
-                psfs[i, j] = self.offax(x, y)
-                pb.update(1)
+                # Convert the batch to 32-bit and store it in `psfs`
+                psfs.reshape((-1, self.npixels, self.npixels))[i : i + batch_size] = (
+                    batch_psfs.astype(np.float32)
+                )
+                pb.update(batch_points.shape[0])
 
-            # # Calculate PSFs only for the first quadrant (where x >= 0 and y >= 0)
-            # half_size = len(pix_inds) // 2
-            # pbar = tqdm(
-            #     total=half_size**2,
-            #     desc="Computing datacube of PSFs at every pixel",
-            #     delay=0.5,
-            # )
-            #
-            # for i in range(half_size, len(pix_inds)):
-            #     for j in range(half_size, len(pix_inds)):
-            #         psfs[i, j] = self.offax(pixel_lod[i], pixel_lod[j])
-            #         pbar.update(1)
-            #
-            # # Mirror the first quadrant to the other quadrants
-            # # Mirror over y-axis (flip left to right)
-            # psfs[half_size:, :half_size] = np.fliplr(psfs[half_size:, half_size:])
-            #
-            # # Mirror over x-axis (flip up to down)
-            # psfs[:half_size, half_size:] = np.flipud(psfs[half_size:, half_size:])
-            #
-            # # Mirror over both axes (flip both horizontally and vertically)
-            # psfs[:half_size, :half_size] = np.flipud(
-            #     np.fliplr(psfs[half_size:, half_size:])
-            # )
+        self.psf_datacube = psfs
+        # psfs = self.offax(x_lod.flatten(), y_lod.flatten()).reshape(
+        #     (self.npixels, self.npixels, self.npixels, self.npixels)
+        # )
+        # self.psf_datacube = psfs.astype(np.float32)
+        logger.info("Data cube of spatially dependent PSFs created.")
 
-            # Save data cube of spatially dependent PSFs.
-            psfs_xr = xr.DataArray(
-                psfs,
-                coords=coords,
-                dims=dims,
-            )
-            psfs_xr.to_netcdf(path)
-        self.has_psf_datacube = True
-        self.psf_datacube = np.ascontiguousarray(psfs_xr)
-        breakpoint()
+        # Save data cube of spatially dependent PSFs.
+        # psfs_xr = xr.DataArray(
+        #     psfs,
+        #     coords=coords,
+        #     dims=dims,
+        # )
+        #     psfs_xr.to_netcdf(path)
+        # self.has_psf_datacube = True
+        # self.psf_datacube = np.ascontiguousarray(psfs_xr)
