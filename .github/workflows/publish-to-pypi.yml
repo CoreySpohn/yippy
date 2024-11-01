@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/lod_unit
+      url: https://pypi.org/p/yippy
     permissions:
       id-token: write
 
