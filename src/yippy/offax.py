@@ -9,13 +9,13 @@ from astropy.units import Quantity
 from lod_unit import lod
 from numpy.typing import NDArray
 
-from yippy.util import convert_to_lod, create_shift_mask, fft_rotate, fft_shift
+from yippy.util import convert_to_lod, create_shift_mask, fft_shift
 
 from .logger import logger
 
 
 class OffAx:
-    """Base class for handling off-axis PSFs.
+    """Class for handling off-axis PSFs in pure Python.
 
     This class loads and processes PSF data from the yield input package (YIP).
     It currently supports oneD and quater symmetric PSF YIPs. The primary use
@@ -52,6 +52,8 @@ class OffAx:
         offax_data_file: str,
         offax_offsets_file: str,
         pixel_scale: Quantity,
+        x_symmetric: bool,
+        y_symmetric: bool,
     ) -> None:
         """Initializes the OffAx class by loading PSF and offset data from YIP.
 
@@ -60,6 +62,10 @@ class OffAx:
         """
         # Pixel scale in lambda/D
         self.pixel_scale = pixel_scale
+
+        # Load symmetry
+        self.x_symmetric = x_symmetric
+        self.y_symmetric = y_symmetric
 
         # Load off-axis PSF data (e.g. the planet) (unitless intensity maps)
         psfs = pyfits.getdata(Path(yip_dir, offax_data_file), 0)
@@ -199,7 +205,7 @@ class OffAx:
 
         """
         # Set default values
-        rot, flip_lr, flip_ud = 0, False, False
+        flip_lr, flip_ud = False, False
 
         # Check for exact matches
         if x in self.x_offsets and y in self.y_offsets:
@@ -209,29 +215,14 @@ class OffAx:
 
         # Translate position based on type
         if self.type == "1d":
+            flip_lr, flip_ud = x < 0, y < 0
             sep = np.sqrt(x**2 + y**2)
-            rot = np.rad2deg(np.arctan2(y, x))
             _x, _y = sep, 0
         elif self.type == "2dq":
             flip_lr, flip_ud = x < 0, y < 0
             _x, _y = abs(x), abs(y)
         else:
             _x, _y = x, y
-
-        # Check if the converted position is an exact match
-        if _x in self.x_offsets and _y in self.y_offsets:
-            # If the x and y values are exact matches we can get the PSF directly
-            # and then apply any necessary flips or rotations
-            psf = self.reshaped_psfs[
-                np.searchsorted(self.x_offsets, _x), np.searchsorted(self.y_offsets, _y)
-            ]
-            if flip_lr:
-                psf = np.fliplr(psf)
-            if flip_ud:
-                psf = np.flipud(psf)
-            if rot != 0:
-                psf = fft_rotate(psf, rot)
-            return psf
 
         # Get indices of nearest PSFs, in x and y directions
         x_match = _x in self.x_offsets
@@ -260,48 +251,68 @@ class OffAx:
         # Get the PSFs at the nearest offsets
         near_psfs = self.reshaped_psfs[near_inds[:, 0], near_inds[:, 1]]
 
-        # Get the shift (in pixels) required to align with the input (x, y)
-        near_shifts = (np.array([_x, _y]) - near_offsets) / self.pixel_scale.value
-
-        # Calculate the distance of each PSF from the input (x, y)
-        near_diffs = np.linalg.norm(near_shifts, axis=1)
-
-        # Gaussian weighting
-        sigma = 1.0
-        weights = np.exp(-(near_diffs**2) / (2 * sigma**2))
-
-        # Normalize the weights
-        weights /= weights.sum()
-
-        # Initialize the PSF array
-        psf = np.zeros_like(near_psfs[0])
-
-        # Initialize the weight array
-        # This weight system is used because shifting a PSF right by one pixel
-        # will leave a blank pixel on the left side of the image. The weight
-        # array keeps track of which PSFs have contributions for each pixel.
-        weight_array = np.zeros_like(psf)
-
         # Combine the PSFs
-        for i, near_psf in enumerate(near_psfs):
-            shifted_psf = fft_shift(near_psf, *near_shifts[i])
-            weight_mask = create_shift_mask(near_psf, *near_shifts[i], weights[i])
-            # Add the weighted PSF to the total PSF
-            psf += weight_mask * shifted_psf
-            # Keep track of the weight for each pixel
-            weight_array += weight_mask
-        # Divide each pixel by its weight to get the final PSF
-        psf /= weight_array
+        if len(near_psfs) > 1:
+            # Get the shift (in pixels) required to align with the input (x, y)
+            near_shifts = (np.array([_x, _y]) - near_offsets) / self.pixel_scale.value
 
-        # Apply any necessary flips or rotations
-        if flip_lr:
+            # Calculate the distance of each PSF from the input (x, y)
+            near_diffs = np.linalg.norm(near_shifts, axis=1)
+
+            # Gaussian weighting
+            sigma = 0.25
+            weights = np.exp(-(near_diffs**2) / (2 * sigma**2))
+
+            # Normalize the weights
+            weights /= weights.sum()
+
+            # Initialize the PSF array
+            psf = np.zeros_like(near_psfs[0])
+
+            # Initialize the weight array
+            # This weight system is used because shifting a PSF right by one pixel
+            # will leave a blank pixel on the left side of the image. The weight
+            # array keeps track of which PSFs have contributions for each pixel.
+            weight_array = np.zeros_like(psf)
+            for i, near_psf in enumerate(near_psfs):
+                shifted_psf = fft_shift(near_psf, *near_shifts[i])
+                weight_mask = create_shift_mask(near_psf, *near_shifts[i], weights[i])
+                # Add the weighted PSF to the total PSF
+                psf += weight_mask * shifted_psf
+                # Keep track of the weight for each pixel
+                weight_array += weight_mask
+            # Divide each pixel by its weight to get the final PSF
+            psf /= weight_array
+        else:
+            psf = near_psfs[0]
+
+        # Apply any necessary flips before shifting
+        if self.x_symmetric and flip_lr:
             psf = np.fliplr(psf)
-        if flip_ud:
+            remaining_x_shift = x + _x
+        else:
+            remaining_x_shift = x - _x
+        if self.y_symmetric and flip_ud:
             psf = np.flipud(psf)
-        if rot != 0:
-            psf = fft_rotate(psf, rot)
+            remaining_y_shift = y + _y
+        else:
+            remaining_y_shift = y - _y
+
+        if remaining_x_shift != 0 or remaining_y_shift != 0:
+            psf = fft_shift(
+                psf,
+                remaining_x_shift / self.pixel_scale.value,
+                remaining_y_shift / self.pixel_scale.value,
+            )
 
         return psf
+
+    def create_psfs(self, x: NDArray, y: NDArray) -> NDArray:
+        """Creates and returns the PSFs at the specified off-axis positions."""
+        psfs = np.empty((len(x), *self.reshaped_psfs.shape[2:]))
+        for i in range(len(x)):
+            psfs[i] = self.create_psf(x[i], y[i])
+        return psfs
 
     def __call__(
         self, x: Quantity, y: Quantity, lam=None, D=None, dist=None
@@ -334,12 +345,19 @@ class OffAx:
             NDArray:
                 The PSF at the given x/y position
         """
-        # Convert the x and y positions to lambda/D if they are in pixels
-        if x.unit != lod:
-            x = convert_to_lod(x, self.center_x, self.pixel_scale, lam, D, dist)
-        if y.unit != lod:
-            y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
+        if isinstance(x, Quantity):
+            # Convert the x and y positions to lambda/D if they are in pixels
+            if x.unit != lod:
+                x = convert_to_lod(x, self.center_x, self.pixel_scale, lam, D, dist)
+            else:
+                x = x.value
+        if isinstance(y, Quantity):
+            if y.unit != lod:
+                y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
+            else:
+                y = y.value
 
-        img = self.create_psf(x.value, y.value)
-
-        return img
+        if np.isscalar(x) and np.isscalar(y):
+            return self.create_psf(x, y)
+        else:
+            return self.create_psfs(x, y)
