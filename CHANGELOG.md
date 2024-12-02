@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.5.0](https://github.com/CoreySpohn/yippy/compare/v1.4.0...v1.5.0) (2024-12-02)
+
+
+### Features
+
+* Add OffJAx class ([46c82f9](https://github.com/CoreySpohn/yippy/commit/46c82f92e0957924dc3e8be70dba199d3917b8ea))
+* Make x and y symmetry optional, remove rotational symmetry ([fe1cb33](https://github.com/CoreySpohn/yippy/commit/fe1cb3346feff5aedd43a649bfde273672b150c7))
+
+
+### Bug Fixes
+
+* Added x/y symmetry options to the JAX implementation ([08d08e6](https://github.com/CoreySpohn/yippy/commit/08d08e62e70d1533c3b0644560a5ae7569cd570f))
+
 ## [1.4.0](https://github.com/CoreySpohn/yippy/compare/v1.3.0...v1.4.0) (2024-08-30)
 
 
