@@ -36,6 +36,7 @@ class Coronagraph:
         sky_trans_file: str = "sky_trans.fits",
         x_symmetric: bool = True,
         y_symmetric: bool = False,
+        shift_2d: bool = False,
     ):
         """Initialize the Coronagraph object.
 
@@ -66,6 +67,8 @@ class Coronagraph:
                 Whether off-axis PSFs are symmetric about the x-axis. Default is True.
             y_symmetric (bool):
                 Whether off-axis PSFs are symmetric about the y-axis. Default is False.
+            shift_2d (bool):
+                Whether to use 2D shifting for off-axis PSFs. Default is False.
         """
         ###################
         # Read input data #
@@ -98,6 +101,7 @@ class Coronagraph:
                 self.pixel_scale,
                 x_symmetric,
                 y_symmetric,
+                shift_2d,
             )
         else:
             self.offax = OffJAX(
