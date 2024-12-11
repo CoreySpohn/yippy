@@ -8,6 +8,7 @@ import numpy as np
 from tqdm import tqdm
 
 from .header import HeaderData
+from .jax_funcs import enable_x64, set_host_device_count, set_platform
 from .logger import logger
 from .offax import OffAx
 from .offjax import OffJAX
@@ -29,6 +30,7 @@ class Coronagraph:
         self,
         yip_path: Path,
         use_jax: bool = False,
+        use_x64: bool = False,
         stellar_intens_file: str = "stellar_intens.fits",
         stellar_diam_file: str = "stellar_intens_diam_list.fits",
         offax_data_file: str = "offax_psf.fits",
@@ -37,6 +39,8 @@ class Coronagraph:
         x_symmetric: bool = True,
         y_symmetric: bool = False,
         shift_2d: bool = False,
+        cpu_cores: int = 1,
+        platform: str = "cpu",
     ):
         """Initialize the Coronagraph object.
 
@@ -51,6 +55,8 @@ class Coronagraph:
                     sky_trans - Sky transmission data
             use_jax (bool):
                 Whether to use JAX for optimized computation. Default is False.
+            use_x64 (bool):
+                Whether to use 64-bit floating point precision. Default is False.
             stellar_intens_file (str):
                 Name of the stellar intensity file. Default is stellar_intens.fits
             stellar_diam_file (str):
@@ -69,6 +75,11 @@ class Coronagraph:
                 Whether off-axis PSFs are symmetric about the y-axis. Default is False.
             shift_2d (bool):
                 Whether to use 2D shifting for off-axis PSFs. Default is False.
+            cpu_cores (int):
+                Number of CPU cores to use. Default is 1.
+            platform (str):
+                Platform to use for JAX computation. Default is "cpu". Options are
+                "cpu", "gpu", "tpu".
         """
         ###################
         # Read input data #
@@ -104,6 +115,13 @@ class Coronagraph:
                 shift_2d,
             )
         else:
+            # Apply JAX settings
+            if use_x64:
+                enable_x64()
+            if platform != "cpu":
+                set_platform(platform)
+            elif cpu_cores > 1:
+                set_host_device_count(cpu_cores)
             self.offax = OffJAX(
                 yip_path,
                 offax_data_file,
@@ -111,6 +129,8 @@ class Coronagraph:
                 self.pixel_scale,
                 x_symmetric,
                 y_symmetric,
+                cpu_cores,
+                platform,
             )
 
         # Get the sky_trans mask

@@ -362,16 +362,22 @@ class OffAx:
                 y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
             else:
                 y = y.value
-        # Prepare arguments for parallel execution
-        args = list(zip(x, y))
+        # For each x[i], we create a column of identical x-values and the full y-array.
+        # This way, each process will handle (len(y)) points for that particular x[i].
+        args = []
+        for xi in x:
+            # Create an array filled with xi, same shape as y
+            x_col = np.full_like(y, xi)
+            args.append((x_col, y))
 
-        # Use a multiprocessing Pool for parallel execution
+        # Each process will handle a single (x_col, y) pair and run self.create_psfs
+        # which returns a 3D stack: shape = (len(y), height, width).
         with Pool(processes=workers) as pool:
-            # pool.starmap will unpack the tuples in args as arguments to create_psf
-            psf_list = pool.starmap(self.create_psf, args)
+            psf_rows = pool.starmap(self.create_psfs, args)
 
-        # Stack the list of PSFs along a new axis
-        psf_datacube = np.stack(psf_list, axis=0)
+        # psf_rows is now a list of arrays, each of shape (len(y), height, width)
+        # Stack them along a new axis to form (len(x), len(y), height, width)
+        psf_datacube = np.stack(psf_rows, axis=0)
         return psf_datacube
 
     def __call__(

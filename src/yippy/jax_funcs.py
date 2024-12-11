@@ -1,66 +1,165 @@
 """JAX functions for image processing operations."""
 
+import os
+import re
 from functools import partial
 
+import jax
 import jax.numpy as jnp
 from jax import lax
 
 
-def create_psf(
-    x,
-    y,
-    create_avg_psf,
-    convert_xy,
-    x_shift,
-    y_shift,
-    pixel_scale,
-    x_offsets,
-    y_offsets,
-    x_grid,
-    y_grid,
-    reshaped_psfs,
-):
-    """Create the PSF at the specified off-axis position using JAX."""
-    psf = create_avg_psf(
-        x, y, pixel_scale, x_offsets, y_offsets, x_grid, y_grid, reshaped_psfs
+def enable_x64(use_x64=True):
+    """Changes the default array type to use 64 bit precision as in NumPy.
+
+    Lovingly borrowed from the numpyro library until JAX provides a more
+    convenient way.
+
+    Args:
+        use_x64 (Bool):
+            when `True`, JAX arrays will use 64 bits by default; else 32 bits.
+    """
+    if not use_x64:
+        use_x64 = bool(os.getenv("JAX_ENABLE_X64", 0))
+    jax.config.update("jax_enable_x64", use_x64)
+
+
+def set_platform(platform=None):
+    """Changes platform to CPU, GPU, or TPU.
+
+    This utility only takes effect at the beginning of your program.
+
+    Lovingly borrowed from the numpyro library until JAX provides a more
+    convenient way.
+
+    Args:
+        platform (str):
+           either 'cpu', 'gpu', or 'tpu'.
+    """
+    if platform is None:
+        platform = os.getenv("JAX_PLATFORM_NAME", "cpu")
+    jax.config.update("jax_platform_name", platform)
+
+
+def set_host_device_count(n: int) -> None:
+    """Set the number of CPU cores available to XLA.
+
+    By default, XLA considers all CPU cores as one device. This utility tells XLA
+    that there are `n` host (CPU) devices available to use. As a consequence, this
+    allows parallel mapping in JAX :func:`jax.pmap` to work in CPU platform.
+
+    Lovingly borrowed from the numpyro library until JAX provides a more
+    convenient way.
+
+    .. note:: This utility only takes effect at the beginning of your program.
+        Under the hood, this sets the environment variable
+        `XLA_FLAGS=--xla_force_host_platform_device_count=[num_devices]`, where
+        `[num_device]` is the desired number of CPU devices `n`.
+
+    .. warning:: Our understanding of the side effects of using the
+        `xla_force_host_platform_device_count` flag in XLA is incomplete. If you
+        observe some strange phenomenon when using this utility, please let us
+        know through our issue or forum page. More information is available in this
+        `JAX issue <https://github.com/google/jax/issues/1408>`_.
+
+
+    Args:
+        n (int):
+            number of CPU devices to use.
+    """
+    xla_flags_str = os.getenv("XLA_FLAGS", "")
+    xla_flags = re.sub(
+        r"--xla_force_host_platform_device_count=\S+", "", xla_flags_str
+    ).split()
+    os.environ["XLA_FLAGS"] = " ".join(
+        ["--xla_force_host_platform_device_count={}".format(n)] + xla_flags
     )
-    _x, _y = convert_xy(x, y)
-    psf = x_shift(x, _x, psf)
-    psf = y_shift(y, _y, psf)
-    return psf
 
 
-def fft_shift_jax(image, x=0, y=0):
-    """Apply a Fourier shift to an image along the x and/or y axes using JAX.
+# def fft_shift_2d(image, x=0, y=0):
+#     """Apply a 2D Fourier shift to an image along both the x and y axes.
+#
+#     This function performs a 2D Fourier shift, allowing for subpixel accuracy
+#     in both x and y directions simultaneously. The image is transformed to the
+#     frequency domain, shifted by applying a phasor, and then transformed back
+#     to the spatial domain.
+#
+#     Args:
+#         image (numpy.ndarray):
+#             The input 2D image to be shifted.
+#         x (float):
+#             The number of pixels by which to shift the image along the x-axis.
+#         y (float):
+#             The number of pixels by which to shift the image along the y-axis.
+#
+#     Returns:
+#         numpy.ndarray:
+#             The shifted image after applying the 2D Fourier transform-based shift.
+#     """
+#     n_pixels = image.shape[0]
+#     n_pad = int(1.5 * n_pixels)
+#     img_edge = n_pad + n_pixels
+#
+#     # Pad the image with zeros
+#     image = np.pad(image, n_pad, mode="constant")
+#
+#     # Compute the 2D Fourier transform of the image
+#     image_ft = np.fft.fft2(image)
+#
+#     # Get the shape of the image
+#     n_rows, n_cols = image.shape
+#
+#     # Create frequency grids for both axes
+#     ky = np.fft.fftfreq(n_rows)
+#     kx = np.fft.fftfreq(n_cols)
+#
+#     # Create meshgrids for frequencies
+#     # Kx, Ky = np.meshgrid(kx, ky)
+#
+#     # Create the combined phasor for both shifts
+#     # phasor = np.exp(-2j * np.pi * (Kx * x + Ky * y))
+#     # Create 1D phasors
+#     exp_kx = np.exp(-2j * np.pi * kx * x)
+#     exp_ky = np.exp(-2j * np.pi * ky * y)
+#     # Compute outer product for phasor without full meshgrid
+#     phasor = np.outer(exp_ky, exp_kx)
+#
+#     # Apply the phasor to the Fourier transformed image
+#     image_ft_shifted = image_ft * phasor
+#
+#     # Compute the inverse 2D Fourier transform
+#     shifted_image = np.fft.ifft2(image_ft_shifted)
+#
+#     # Return the real part of the shifted image
+#     shifted_image = np.real(shifted_image)
+#
+#     return shifted_image[n_pad:img_edge, n_pad:img_edge]
 
-    This is the JAX version of the `fft_shift` function.
+
+def get_pad_info(image, pad_factor):
+    """Get the padding information for an image.
 
     Args:
         image (jax.numpy.ndarray):
-            The input 2D image to be shifted.
-        x (float, optional):
-            The number of pixels by which to shift the image along the x-axis.
-        y (float, optional):
-            The number of pixels by which to shift the image along the y-axis.
+            The input image to be shifted.
+        pad_factor (float):
+            The factor by which to pad the image.
 
     Returns:
-        jax.numpy.ndarray:
-            The shifted image after applying the Fourier transform-based shift
-            along the specified axes.
+        int:
+            The number of pixels in the original image.
+        int:
+            The number of pixels to pad the image.
+        int:
+            The edge of the image after padding.
+        int:
+            The number of pixels in the final image.
     """
-    image = lax.cond(
-        x != 0,
-        lambda x: fft_shift_x(image, x),
-        lambda x: image,
-        x,
-    )
-    image = lax.cond(
-        y != 0,
-        lambda y: fft_shift_y(image, y),
-        lambda y: image,
-        y,
-    )
-    return image
+    n_pixels_orig = image.shape[0]
+    n_pad = int(pad_factor * n_pixels_orig)
+    img_edge = n_pad + n_pixels_orig
+    n_pixels_final = int(2 * n_pixels_orig * pad_factor + n_pixels_orig)
+    return n_pixels_orig, n_pad, img_edge, n_pixels_final
 
 
 def fft_shift_x(image, shift_pixels):
@@ -81,15 +180,13 @@ def fft_shift_x(image, shift_pixels):
             The shifted image after applying the Fourier transform and removing
             the padding.
     """
-    n_pixels = image.shape[0]
-    n_pad = int(1.5 * n_pixels)
-    img_edge = n_pad + n_pixels
+    n_pixels_orig, n_pad, img_edge, n_pixels_final = get_pad_info(image, 1.5)
 
     # Pad the image with zeros
     padded = jnp.pad(image, n_pad, mode="constant")
 
     # Get the frequencies used for the Fourier transform along the specified axis
-    freqs = jnp.fft.fftfreq(4 * n_pixels)
+    freqs = jnp.fft.fftfreq(n_pixels_final)
 
     # Take the 1D Fourier transform along the specified axis
     padded = jnp.fft.fft(padded, axis=1)
@@ -130,9 +227,7 @@ def fft_shift_y(image, shift_pixels):
             The shifted image after applying the Fourier transform and removing
             the padding.
     """
-    n_pixels = image.shape[0]
-    n_pad = int(1.5 * n_pixels)
-    img_edge = n_pad + n_pixels
+    n_pixels, n_pad, img_edge = get_pad_info(image, 1.5)
 
     # Pad the image with zeros
     padded = jnp.pad(image, n_pad, mode="constant")
@@ -808,7 +903,6 @@ def x_symmetric_shift(input_val, converted_val, PSF, pixel_scale):
         operand=None,
     )
     # Perform shift
-    # shifted_psf = fft_shift_x(_PSF, shift)
     return fft_shift_x(_PSF, shift)
 
 
