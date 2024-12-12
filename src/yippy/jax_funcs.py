@@ -76,66 +76,6 @@ def set_host_device_count(n: int) -> None:
     )
 
 
-# def fft_shift_2d(image, x=0, y=0):
-#     """Apply a 2D Fourier shift to an image along both the x and y axes.
-#
-#     This function performs a 2D Fourier shift, allowing for subpixel accuracy
-#     in both x and y directions simultaneously. The image is transformed to the
-#     frequency domain, shifted by applying a phasor, and then transformed back
-#     to the spatial domain.
-#
-#     Args:
-#         image (numpy.ndarray):
-#             The input 2D image to be shifted.
-#         x (float):
-#             The number of pixels by which to shift the image along the x-axis.
-#         y (float):
-#             The number of pixels by which to shift the image along the y-axis.
-#
-#     Returns:
-#         numpy.ndarray:
-#             The shifted image after applying the 2D Fourier transform-based shift.
-#     """
-#     n_pixels = image.shape[0]
-#     n_pad = int(1.5 * n_pixels)
-#     img_edge = n_pad + n_pixels
-#
-#     # Pad the image with zeros
-#     image = np.pad(image, n_pad, mode="constant")
-#
-#     # Compute the 2D Fourier transform of the image
-#     image_ft = np.fft.fft2(image)
-#
-#     # Get the shape of the image
-#     n_rows, n_cols = image.shape
-#
-#     # Create frequency grids for both axes
-#     ky = np.fft.fftfreq(n_rows)
-#     kx = np.fft.fftfreq(n_cols)
-#
-#     # Create meshgrids for frequencies
-#     # Kx, Ky = np.meshgrid(kx, ky)
-#
-#     # Create the combined phasor for both shifts
-#     # phasor = np.exp(-2j * np.pi * (Kx * x + Ky * y))
-#     # Create 1D phasors
-#     exp_kx = np.exp(-2j * np.pi * kx * x)
-#     exp_ky = np.exp(-2j * np.pi * ky * y)
-#     # Compute outer product for phasor without full meshgrid
-#     phasor = np.outer(exp_ky, exp_kx)
-#
-#     # Apply the phasor to the Fourier transformed image
-#     image_ft_shifted = image_ft * phasor
-#
-#     # Compute the inverse 2D Fourier transform
-#     shifted_image = np.fft.ifft2(image_ft_shifted)
-#
-#     # Return the real part of the shifted image
-#     shifted_image = np.real(shifted_image)
-#
-#     return shifted_image[n_pad:img_edge, n_pad:img_edge]
-
-
 def get_pad_info(image, pad_factor):
     """Get the padding information for an image.
 
@@ -162,7 +102,7 @@ def get_pad_info(image, pad_factor):
     return n_pixels_orig, n_pad, img_edge, n_pixels_final
 
 
-def fft_shift_x(image, shift_pixels):
+def fft_shift_x(image, shift_pixels, phasor):
     """Apply a Fourier shift to an image along the x axis.
 
     A traceable version of the `fft_shift_1d` function that applies a Fourier
@@ -174,6 +114,8 @@ def fft_shift_x(image, shift_pixels):
             The input 2D image to be shifted.
         shift_pixels (float):
             The number of pixels by which to shift the image along the specified axis.
+        phasor (jax.numpy.ndarray):
+            Precomputed components for the Fourier shift (exp(-2j * pi * fft_freqs)).
 
     Returns:
         jax.numpy.ndarray:
@@ -183,19 +125,14 @@ def fft_shift_x(image, shift_pixels):
     n_pixels_orig, n_pad, img_edge, n_pixels_final = get_pad_info(image, 1.5)
 
     # Pad the image with zeros
-    padded = jnp.pad(image, n_pad, mode="constant")
-
-    # Get the frequencies used for the Fourier transform along the specified axis
-    freqs = jnp.fft.fftfreq(n_pixels_final)
+    padded = lax.pad(image, 0.0, [(n_pad, n_pad, 0), (n_pad, n_pad, 0)])
 
     # Take the 1D Fourier transform along the specified axis
     padded = jnp.fft.fft(padded, axis=1)
 
-    # Create the phasor
-    phasor = jnp.exp(-2j * jnp.pi * freqs * shift_pixels)
-
     # Tile the phasor to match the dimensions of the padded image
-    phasor = jnp.tile(phasor, (padded.shape[0], 1))  # Horizontal shift (x-axis)
+    # Horizontal shift (x-axis)
+    phasor = jnp.tile(phasor**shift_pixels, (padded.shape[0], 1))
 
     # Apply the phasor along the specified axis
     padded = padded * phasor
@@ -209,7 +146,7 @@ def fft_shift_x(image, shift_pixels):
     return image
 
 
-def fft_shift_y(image, shift_pixels):
+def fft_shift_y(image, shift_pixels, phasor):
     """Apply a Fourier shift to an image along the y axis.
 
     A traceable version of the `fft_shift_1d` function that applies a Fourier
@@ -221,29 +158,25 @@ def fft_shift_y(image, shift_pixels):
             The input 2D image to be shifted.
         shift_pixels (float):
             The number of pixels by which to shift the image along the specified axis.
+        phasor (jax.numpy.ndarray):
+            Precomputed components for the Fourier shift (exp(-2j * pi * fft_freqs)).
 
     Returns:
         jax.numpy.ndarray:
             The shifted image after applying the Fourier transform and removing
             the padding.
     """
-    n_pixels, n_pad, img_edge = get_pad_info(image, 1.5)
+    n_pixels_orig, n_pad, img_edge, n_pixels_final = get_pad_info(image, 1.5)
 
     # Pad the image with zeros
-    padded = jnp.pad(image, n_pad, mode="constant")
+    padded = lax.pad(image, 0.0, [(n_pad, n_pad, 0), (n_pad, n_pad, 0)])
 
     # Take the 1D Fourier transform along the specified axis
     padded = jnp.fft.fft(padded, axis=0)
 
-    # Get the frequencies used for the Fourier transform along the specified axis
-    freqs = jnp.fft.fftfreq(4 * n_pixels)
-
-    # Create the phasor
-    phasor = jnp.exp(-2j * jnp.pi * freqs * shift_pixels)
-
     # Tile the phasor to match the dimensions of the padded image
     # Vertical shift (y-axis)
-    phasor = jnp.tile(phasor, (padded.shape[1], 1)).T
+    phasor = jnp.tile(phasor**shift_pixels, (padded.shape[1], 1)).T
 
     # Apply the phasor along the specified axis
     padded = padded * phasor
@@ -691,6 +624,8 @@ def create_avg_psf_1D(
     y_offsets: jnp.ndarray,
     x_grid: jnp.ndarray,
     y_grid: jnp.ndarray,
+    x_phasor: jnp.ndarray,
+    y_phasor: jnp.ndarray,
     reshaped_psfs: jnp.ndarray,
 ):
     """Creates and returns the PSF at the specified off-axis position using JAX."""
@@ -709,10 +644,24 @@ def create_avg_psf_1D(
 
     # Manually shift each PSF
     shifted_psf1, mask1 = shift_and_mask(
-        near_psfs[0], near_shifts[0, 0], near_shifts[0, 1], weights[0], x_grid, y_grid
+        near_psfs[0],
+        near_shifts[0, 0],
+        near_shifts[0, 1],
+        weights[0],
+        x_grid,
+        y_grid,
+        x_phasor,
+        y_phasor,
     )
     shifted_psf2, mask2 = shift_and_mask(
-        near_psfs[1], near_shifts[1, 0], near_shifts[1, 1], weights[1], x_grid, y_grid
+        near_psfs[1],
+        near_shifts[1, 0],
+        near_shifts[1, 1],
+        weights[1],
+        x_grid,
+        y_grid,
+        x_phasor,
+        y_phasor,
     )
 
     # Accumulate the weighted PSFs and the weight masks
@@ -737,6 +686,8 @@ def create_avg_psf_2DQ(
     y_offsets: jnp.ndarray,
     x_grid: jnp.ndarray,
     y_grid: jnp.ndarray,
+    x_phasor: jnp.ndarray,
+    y_phasor: jnp.ndarray,
     reshaped_psfs: jnp.ndarray,
 ):
     """Creates and returns the PSF at the specified off-axis position using JAX."""
@@ -755,16 +706,44 @@ def create_avg_psf_2DQ(
 
     # Manually shift each PSF
     shifted_psf1, mask1 = shift_and_mask(
-        near_psfs[0], near_shifts[0, 0], near_shifts[0, 1], weights[0], x_grid, y_grid
+        near_psfs[0],
+        near_shifts[0, 0],
+        near_shifts[0, 1],
+        weights[0],
+        x_grid,
+        y_grid,
+        x_phasor,
+        y_phasor,
     )
     shifted_psf2, mask2 = shift_and_mask(
-        near_psfs[1], near_shifts[1, 0], near_shifts[1, 1], weights[1], x_grid, y_grid
+        near_psfs[1],
+        near_shifts[1, 0],
+        near_shifts[1, 1],
+        weights[1],
+        x_grid,
+        y_grid,
+        x_phasor,
+        y_phasor,
     )
     shifted_psf3, mask3 = shift_and_mask(
-        near_psfs[2], near_shifts[2, 0], near_shifts[2, 1], weights[2], x_grid, y_grid
+        near_psfs[2],
+        near_shifts[2, 0],
+        near_shifts[2, 1],
+        weights[2],
+        x_grid,
+        y_grid,
+        x_phasor,
+        y_phasor,
     )
     shifted_psf4, mask4 = shift_and_mask(
-        near_psfs[3], near_shifts[3, 0], near_shifts[3, 1], weights[3], x_grid, y_grid
+        near_psfs[3],
+        near_shifts[3, 0],
+        near_shifts[3, 1],
+        weights[3],
+        x_grid,
+        y_grid,
+        x_phasor,
+        y_phasor,
     )
 
     # Accumulate the weighted PSFs and the weight masks
@@ -839,7 +818,9 @@ def get_near_inds_offsets_2D(
     return near_inds, near_offsets
 
 
-def shift_and_mask(near_psf, shift_x, shift_y, weight, x_grid, y_grid):
+def shift_and_mask(
+    near_psf, shift_x, shift_y, weight, x_grid, y_grid, x_phasor, y_phasor
+):
     """Shifts the PSF in x and y directions and applies a weight mask.
 
     Args:
@@ -849,6 +830,8 @@ def shift_and_mask(near_psf, shift_x, shift_y, weight, x_grid, y_grid):
         weight (float): Weight for the PSF.
         x_grid (jax.numpy.ndarray): The x-coordinate grid.
         y_grid (jax.numpy.ndarray): The y-coordinate grid.
+        x_phasor (jax.numpy.ndarray): Precomputed components for the Fourier shift.
+        y_phasor (jax.numpy.ndarray): Precomputed components for the Fourier shift.
 
     Returns:
         Tuple[jax.numpy.ndarray, jax.numpy.ndarray]:
@@ -856,8 +839,8 @@ def shift_and_mask(near_psf, shift_x, shift_y, weight, x_grid, y_grid):
             - Weight mask.
     """
     # Shift the PSF in x and y directions
-    shifted_psf = fft_shift_x(near_psf, shift_x)
-    shifted_psf = fft_shift_y(shifted_psf, shift_y)
+    shifted_psf = fft_shift_x(near_psf, shift_x, x_phasor)
+    shifted_psf = fft_shift_y(shifted_psf, shift_y, y_phasor)
 
     # Create the weight mask
     weight_mask = create_shift_mask_jax(
@@ -885,17 +868,29 @@ def convert_xy_2D(x, y):
     return x, y
 
 
-def x_symmetric_shift(input_val, converted_val, PSF, pixel_scale):
+def x_basic_shift(input_val, converted_val, PSF, pixel_scale, x_phasor):
+    """Shifts the PSF to the specified x position."""
+    shift = (input_val - converted_val) / pixel_scale
+    return fft_shift_x(PSF, shift, x_phasor)
+
+
+def y_basic_shift(input_val, converted_val, PSF, pixel_scale, y_phasor):
+    """Shifts the PSF to the specified y position."""
+    shift = (input_val - converted_val) / pixel_scale
+    return fft_shift_y(PSF, shift, y_phasor)
+
+
+def x_symmetric_shift(input_val, converted_val, PSF, pixel_scale, x_phasor):
     """Shifts the PSF to the specified position assuming symmetry about x=0."""
     flip = jnp.sign(input_val) == -1
-    # Conditional flipping
+    # Apply a horizontal flip if the input value is negative
     _PSF = lax.cond(
         flip,
         lambda _: jnp.fliplr(PSF),
         lambda _: PSF,
         operand=None,
     )
-    # Conditional shift calculation
+    # Calculate the distance to shift the PSF
     shift = lax.cond(
         flip,
         lambda _: (input_val + converted_val) / pixel_scale,
@@ -903,28 +898,24 @@ def x_symmetric_shift(input_val, converted_val, PSF, pixel_scale):
         operand=None,
     )
     # Perform shift
-    return fft_shift_x(_PSF, shift)
+    return fft_shift_x(_PSF, shift, x_phasor)
 
 
-def x_basic_shift(input_val, converted_val, PSF, pixel_scale):
-    """Shifts the PSF to the specified x position."""
-    shift = (input_val - converted_val) / pixel_scale
-    return fft_shift_x(PSF, shift)
-
-
-def y_symmetric_shift(input_val, converted_val, PSF, pixel_scale):
-    """Shifts the PSF to the specified position assuming symmetry about x=0."""
-    return lax.cond(
-        jnp.sign(input_val) == -1,
-        lambda _: fft_shift_y(
-            jnp.flipud(PSF), (input_val + converted_val) / pixel_scale
-        ),
-        lambda _: fft_shift_y(PSF, (input_val - converted_val) / pixel_scale),
-        None,
+def y_symmetric_shift(input_val, converted_val, PSF, pixel_scale, y_phasor):
+    """Shifts the PSF to the specified position assuming symmetry about y=0."""
+    flip = jnp.sign(input_val) == -1
+    # Apply a vertical flip if the input value is negative
+    _PSF = lax.cond(
+        flip,
+        lambda _: jnp.flipud(PSF),
+        lambda _: PSF,
+        operand=None,
     )
-
-
-def y_basic_shift(input_val, converted_val, PSF, pixel_scale):
-    """Shifts the PSF to the specified y position."""
-    shift = (input_val - converted_val) / pixel_scale
-    return fft_shift_y(PSF, shift)
+    # Get the distance to shift the PSF
+    shift = lax.cond(
+        flip,
+        lambda _: (input_val + converted_val) / pixel_scale,
+        lambda _: (input_val - converted_val) / pixel_scale,
+        operand=None,
+    )
+    return fft_shift_y(_PSF, shift, y_phasor)

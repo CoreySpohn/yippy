@@ -15,6 +15,7 @@ from .jax_funcs import (
     convert_xy_2DQ,
     create_avg_psf_1D,
     create_avg_psf_2DQ,
+    get_pad_info,
     x_basic_shift,
     x_symmetric_shift,
     y_basic_shift,
@@ -78,6 +79,18 @@ class OffJAX(OffAx):
         self.x_grid = device_put(self.x_grid)
         self.y_grid = device_put(self.y_grid)
 
+        n_pixels_orig, n_pad, img_edge, n_pixels_final = get_pad_info(
+            self.reshaped_psfs[0, 0], 1.5
+        )
+
+        # Create the frequency grids
+        ky = jnp.fft.fftfreq(n_pixels_final)
+        kx = jnp.fft.fftfreq(n_pixels_final)
+
+        # Precomputed base exponentials
+        self.x_phasor = jnp.exp(-2j * jnp.pi * kx)
+        self.y_phasor = jnp.exp(-2j * jnp.pi * ky)
+
         ##############
         # Choose the transformations
         ##############
@@ -125,11 +138,13 @@ class OffJAX(OffAx):
                 self.y_offsets,
                 self.x_grid,
                 self.y_grid,
+                self.x_phasor,
+                self.y_phasor,
                 self.reshaped_psfs,
             )
             _x, _y = convert_xy(x, y)
-            psf = x_shift(x, _x, psf, self.pixel_scale.value)
-            psf = y_shift(y, _y, psf, self.pixel_scale.value)
+            psf = x_shift(x, _x, psf, self.pixel_scale.value, self.x_phasor)
+            psf = y_shift(y, _y, psf, self.pixel_scale.value, self.y_phasor)
             return psf
 
         self.create_psf = jit(create_psf)
