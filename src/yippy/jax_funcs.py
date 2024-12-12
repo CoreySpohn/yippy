@@ -771,8 +771,8 @@ def create_avg_psf_2DQ(
     psf = shifted_psf1 + shifted_psf2 + shifted_psf3 + shifted_psf4
     weight_array = mask1 + mask2 + mask3 + mask4
 
-    # Normalize the PSF
-    psf = psf / weight_array
+    safe_reciprocal = jnp.where(weight_array != 0, 1.0 / weight_array, 0.0)
+    psf = psf * safe_reciprocal
 
     return psf
 
