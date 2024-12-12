@@ -4,6 +4,7 @@ from pathlib import Path
 
 import astropy.io.fits as pyfits
 import astropy.units as u
+import jax.numpy as jnp
 import numpy as np
 from tqdm import tqdm
 
@@ -148,70 +149,47 @@ class Coronagraph:
         self.npixels = self.psf_shape[0]
         logger.info(f"Created {yip_path.stem}")
 
-    def create_offax_datacube(self, batch_size=512):
+    def create_psf_datacube(self, batch_size=128):
         """Load the disk image from a file or generate it if it doesn't exist."""
-        # Load data cube of spatially dependent PSFs.
-        # path = self.yip_path / "offax_datacube.nc"
-        #
-        # coords = {
-        #     "x psf offset (pix)": np.arange(self.psf_shape[0]),
-        #     "y psf offset (pix)": np.arange(self.psf_shape[1]),
-        #     "x (pix)": np.arange(self.psf_shape[0]),
-        #     "y (pix)": np.arange(self.psf_shape[1]),
-        # }
-        # dims = ["x psf offset (pix)", "y psf offset (pix)", "x (pix)", "y (pix)"]
-        # if path.exists():
-        #   logger.info("Loading data cube of spatially dependent PSFs, please hold")
-        #     psfs_xr = xr.open_dataarray(path)
-        # else:
-        # logger.info("Calculating data cube of spatially dependent PSFs, please hold")
-        # Compute pixel grid.
-        # Compute pixel grid contrast.
-        psfs_shape = (*self.psf_shape, *self.psf_shape)
-        psfs = np.zeros(psfs_shape, dtype=np.float32)
-        pixel_lod = (
-            (np.arange(self.npixels) - ((self.npixels - 1) // 2))
-            * u.pixel
-            * self.pixel_scale
-        ).value
+        datacube_path = Path(self.yip_path, "psf_datacube.npy")
+        if datacube_path.exists():
+            logger.info(f"Loading PSF datacube from {datacube_path}.")
+            psfs = jnp.load(datacube_path)
+            self.has_psf_datacube = True
+        else:
+            # Create data cube of spatially dependent PSFs.
+            psfs_shape = (*self.psf_shape, *self.psf_shape)
+            psfs = np.zeros(psfs_shape, dtype=np.float32)
+            pixel_lod = (
+                (np.arange(self.npixels) - ((self.npixels - 1) // 2))
+                * u.pixel
+                * self.pixel_scale
+            ).value
 
-        # x_lod, y_lod = np.meshgrid(pixel_lod, pixel_lod, indexing="xy")
-        # npsfs = np.prod(self.psf_shape)
-        # pb = tqdm(total=npsfs, desc="Computing datacube of PSFs at every pixel")
+            # Get the pixel coordinates for the PSF evaluations
+            x_lod, y_lod = np.meshgrid(pixel_lod, pixel_lod, indexing="xy")
+            points = np.column_stack((x_lod.flatten(), y_lod.flatten()))
+            n_points = points.shape[0]
 
-        # Note: intention is that i value maps to x offset and j value maps
-        # to y offset
+            logger.info(
+                "Calculating data cube of spatially dependent PSFs, please hold..."
+            )
+            with tqdm(total=n_points, desc="Computing PSFs") as pb:
+                for i in range(0, n_points, batch_size):
+                    # Select the current batch
+                    batch_points = points[i : i + batch_size]
+                    batch_psfs = self.offax.create_psfs_parallel(
+                        batch_points[:, 0], batch_points[:, 1]
+                    )
 
-        x_lod, y_lod = np.meshgrid(pixel_lod, pixel_lod, indexing="xy")
-        points = np.column_stack((x_lod.flatten(), y_lod.flatten()))
-        n_points = points.shape[0]
+                    # Store the batch in the data cube
+                    psfs.reshape((-1, self.npixels, self.npixels))[
+                        i : i + batch_size
+                    ] = batch_psfs
+                    pb.update(batch_points.shape[0])
+            jnp.save(datacube_path, psfs)
+            logger.info(f"PSF datacube saved to {datacube_path}.")
 
-        logger.info("Calculating data cube of spatially dependent PSFs in batches...")
-        with tqdm(total=n_points, desc="Computing PSFs") as pb:
-            for i in range(0, n_points, batch_size):
-                # Select the current batch, and calculate in 64-bit
-                batch_points = points[i : i + batch_size].astype(np.float64)
-                batch_psfs = self.offax(batch_points[:, 0], batch_points[:, 1])
-
-                # Convert the batch to 32-bit and store it in `psfs`
-                psfs.reshape((-1, self.npixels, self.npixels))[i : i + batch_size] = (
-                    batch_psfs.astype(np.float32)
-                )
-                pb.update(batch_points.shape[0])
-
+        # self.psf_datacube = jnp.ascontiguousarray(psfs)
         self.psf_datacube = psfs
-        # psfs = self.offax(x_lod.flatten(), y_lod.flatten()).reshape(
-        #     (self.npixels, self.npixels, self.npixels, self.npixels)
-        # )
-        # self.psf_datacube = psfs.astype(np.float32)
-        logger.info("Data cube of spatially dependent PSFs created.")
-
-        # Save data cube of spatially dependent PSFs.
-        # psfs_xr = xr.DataArray(
-        #     psfs,
-        #     coords=coords,
-        #     dims=dims,
-        # )
-        #     psfs_xr.to_netcdf(path)
-        # self.has_psf_datacube = True
-        # self.psf_datacube = np.ascontiguousarray(psfs_xr)
+        breakpoint()
