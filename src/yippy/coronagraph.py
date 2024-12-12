@@ -30,7 +30,7 @@ class Coronagraph:
     def __init__(
         self,
         yip_path: Path,
-        use_jax: bool = False,
+        use_jax: bool = True,
         use_x64: bool = False,
         stellar_intens_file: str = "stellar_intens.fits",
         stellar_diam_file: str = "stellar_intens_diam_list.fits",
@@ -105,17 +105,7 @@ class Coronagraph:
         )
 
         # Offaxis PSF of the planet as function of separation from the star
-        if not use_jax:
-            self.offax = OffAx(
-                yip_path,
-                offax_data_file,
-                offax_offsets_file,
-                self.pixel_scale,
-                x_symmetric,
-                y_symmetric,
-                shift_2d,
-            )
-        else:
+        if use_jax:
             # Apply JAX settings
             if use_x64:
                 enable_x64()
@@ -132,6 +122,16 @@ class Coronagraph:
                 y_symmetric,
                 cpu_cores,
                 platform,
+            )
+        else:
+            self.offax = OffAx(
+                yip_path,
+                offax_data_file,
+                offax_offsets_file,
+                self.pixel_scale,
+                x_symmetric,
+                y_symmetric,
+                shift_2d,
             )
 
         # Get the sky_trans mask
