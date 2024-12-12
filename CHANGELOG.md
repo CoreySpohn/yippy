@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.0](https://github.com/CoreySpohn/yippy/compare/v1.5.0...v1.6.0) (2024-12-12)
+
+
+### Features
+
+* Using shard_map for parallel processing with JAX ([ca2ba07](https://github.com/CoreySpohn/yippy/commit/ca2ba07b47431ded18b391ab2a1b13f1aa85f515))
+
+
+### Bug Fixes
+
+* Add safe reciprocal calculation instead of potential division by zeros ([eeadd32](https://github.com/CoreySpohn/yippy/commit/eeadd322367d2e65ed561ce5f396f86f0a27af6a))
+
 ## [1.5.0](https://github.com/CoreySpohn/yippy/compare/v1.4.0...v1.5.0) (2024-12-02)
 
 
