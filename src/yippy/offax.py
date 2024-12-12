@@ -1,5 +1,6 @@
 """Base class for all offax_psfs.fits files."""
 
+from multiprocessing import Pool
 from pathlib import Path
 
 import astropy.io.fits as pyfits
@@ -9,7 +10,7 @@ from astropy.units import Quantity
 from lod_unit import lod
 from numpy.typing import NDArray
 
-from yippy.util import convert_to_lod, create_shift_mask, fft_shift
+from yippy.util import convert_to_lod, create_shift_mask, fft_shift, fft_shift_2d
 
 from .logger import logger
 
@@ -54,6 +55,7 @@ class OffAx:
         pixel_scale: Quantity,
         x_symmetric: bool,
         y_symmetric: bool,
+        shift_2d: bool = False,
     ) -> None:
         """Initializes the OffAx class by loading PSF and offset data from YIP.
 
@@ -66,6 +68,8 @@ class OffAx:
         # Load symmetry
         self.x_symmetric = x_symmetric
         self.y_symmetric = y_symmetric
+
+        self.shift_2d = shift_2d
 
         # Load off-axis PSF data (e.g. the planet) (unitless intensity maps)
         psfs = pyfits.getdata(Path(yip_dir, offax_data_file), 0)
@@ -275,7 +279,10 @@ class OffAx:
             # array keeps track of which PSFs have contributions for each pixel.
             weight_array = np.zeros_like(psf)
             for i, near_psf in enumerate(near_psfs):
-                shifted_psf = fft_shift(near_psf, *near_shifts[i])
+                if self.shift_2d:
+                    shifted_psf = fft_shift_2d(near_psf, *near_shifts[i])
+                else:
+                    shifted_psf = fft_shift(near_psf, *near_shifts[i])
                 weight_mask = create_shift_mask(near_psf, *near_shifts[i], weights[i])
                 # Add the weighted PSF to the total PSF
                 psf += weight_mask * shifted_psf
@@ -313,6 +320,65 @@ class OffAx:
         for i in range(len(x)):
             psfs[i] = self.create_psf(x[i], y[i])
         return psfs
+
+    def parallel_psfs(
+        self,
+        x: np.ndarray,
+        y: np.ndarray,
+        lam=None,
+        D=None,
+        dist=None,
+        workers: int = 4,
+    ) -> np.ndarray:
+        """Compute PSFs for batches of (x, y) arrays using multiprocessing.
+
+        Args:
+            x (np.ndarray):
+                Array of x positions.
+            y (np.ndarray):
+                Array of y positions.
+            lam (astropy.units.Quantity):
+                Wavelength of the observation
+            D (astropy.units.Quantity):
+                Diameter of the telescope
+            dist (astropy.units.Quantity):
+                Distance to the system
+            workers (int):
+                Number of parallel processes to use.
+
+        Returns:
+            np.ndarray:
+                A stacked numpy array of the computed PSFs with shape (N,
+                height, width), where N = len(x).
+        """
+        if isinstance(x, Quantity):
+            # Convert the x and y positions to lambda/D if they are in pixels
+            if x.unit != lod:
+                x = convert_to_lod(x, self.center_x, self.pixel_scale, lam, D, dist)
+            else:
+                x = x.value
+        if isinstance(y, Quantity):
+            if y.unit != lod:
+                y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
+            else:
+                y = y.value
+        # For each x[i], we create a column of identical x-values and the full y-array.
+        # This way, each process will handle (len(y)) points for that particular x[i].
+        args = []
+        for xi in x:
+            # Create an array filled with xi, same shape as y
+            x_col = np.full_like(y, xi)
+            args.append((x_col, y))
+
+        # Each process will handle a single (x_col, y) pair and run self.create_psfs
+        # which returns a 3D stack: shape = (len(y), height, width).
+        with Pool(processes=workers) as pool:
+            psf_rows = pool.starmap(self.create_psfs, args)
+
+        # psf_rows is now a list of arrays, each of shape (len(y), height, width)
+        # Stack them along a new axis to form (len(x), len(y), height, width)
+        psf_datacube = np.stack(psf_rows, axis=0)
+        return psf_datacube
 
     def __call__(
         self, x: Quantity, y: Quantity, lam=None, D=None, dist=None

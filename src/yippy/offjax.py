@@ -5,18 +5,23 @@ from pathlib import Path
 import jax.numpy as jnp
 from astropy.units import Quantity
 from jax import device_put, jit, vmap
+from jax.experimental import mesh_utils
+from jax.experimental.shard_map import shard_map
+from jax.sharding import Mesh
+from jax.sharding import PartitionSpec as P
 
-from .offax import OffAx
-from .util import (
-    create_psf_1D_no_symmetry,
-    create_psf_1D_x_symmetry,
-    create_psf_1D_xy_symmetry,
-    create_psf_1D_y_symmetry,
-    create_psf_2DQ_no_symmetry,
-    create_psf_2DQ_x_symmetry,
-    create_psf_2DQ_xy_symmetry,
-    create_psf_2DQ_y_symmetry,
+from .jax_funcs import (
+    convert_xy_1D,
+    convert_xy_2DQ,
+    create_avg_psf_1D,
+    create_avg_psf_2DQ,
+    get_pad_info,
+    x_basic_shift,
+    x_symmetric_shift,
+    y_basic_shift,
+    y_symmetric_shift,
 )
+from .offax import OffAx
 
 
 class OffJAX(OffAx):
@@ -43,6 +48,8 @@ class OffJAX(OffAx):
         pixel_scale: Quantity,
         x_symmetric: bool,
         y_symmetric: bool,
+        cpu_cores: int = 1,
+        platform: str = "cpu",
     ) -> None:
         """Initializes the OffJAX class by casting YIP data to JAX arrays."""
         super().__init__(
@@ -53,9 +60,14 @@ class OffJAX(OffAx):
             x_symmetric,
             y_symmetric,
         )
+        self.cpu_cores = cpu_cores
+        self.platform = platform
 
+        ##############
         # Convert the PSF data to JAX arrays
+        ##############
         self.reshaped_psfs = device_put(jnp.array(self.reshaped_psfs))
+
         self.x_offsets = device_put(jnp.array(self.x_offsets))
         self.y_offsets = device_put(jnp.array(self.y_offsets))
         # Precompute and store coordinate grids based on PSF shape
@@ -67,59 +79,127 @@ class OffJAX(OffAx):
         self.x_grid = device_put(self.x_grid)
         self.y_grid = device_put(self.y_grid)
 
-        if self.type == "1d":
-            # Determine which PSF creation function to use based on symmetry flags
-            if self.x_symmetric and self.y_symmetric:
-                create_fn = create_psf_1D_xy_symmetry
-            elif self.x_symmetric and not self.y_symmetric:
-                create_fn = create_psf_1D_x_symmetry
-            elif not self.x_symmetric and self.y_symmetric:
-                create_fn = create_psf_1D_y_symmetry
-            else:
-                create_fn = create_psf_1D_no_symmetry
-        elif self.type == "2dq":
-            if self.x_symmetric and self.y_symmetric:
-                create_fn = create_psf_2DQ_xy_symmetry
-            elif self.x_symmetric and not self.y_symmetric:
-                create_fn = create_psf_2DQ_x_symmetry
-            elif not self.x_symmetric and self.y_symmetric:
-                create_fn = create_psf_2DQ_y_symmetry
-            else:
-                create_fn = create_psf_2DQ_no_symmetry
+        n_pixels_orig, n_pad, img_edge, n_pixels_final = get_pad_info(
+            self.reshaped_psfs[0, 0], 1.5
+        )
 
-        # Partially apply the necessary arguments except x and y
-        def _create_psf(x, y):
-            return create_fn(
+        # Create the frequency grids
+        ky = jnp.fft.fftfreq(n_pixels_final)
+        kx = jnp.fft.fftfreq(n_pixels_final)
+
+        # Precomputed base exponentials
+        self.x_phasor = jnp.exp(-2j * jnp.pi * kx)
+        self.y_phasor = jnp.exp(-2j * jnp.pi * ky)
+
+        ##############
+        # Choose the transformations
+        ##############
+        if self.type == "1d":
+            create_avg_psf = create_avg_psf_1D
+            convert_xy = convert_xy_1D
+        elif self.type == "2dq":
+            create_avg_psf = create_avg_psf_2DQ
+            convert_xy = convert_xy_2DQ
+
+        if self.x_symmetric:
+            x_shift = x_symmetric_shift
+        else:
+            x_shift = x_basic_shift
+        if self.y_symmetric:
+            y_shift = y_symmetric_shift
+        else:
+            y_shift = y_basic_shift
+
+        ##############
+        # Create the JAX functions
+        ##############
+        def create_psf(x, y):
+            """Create an off-axis PSF at a given position.
+
+            This uses closures to pass in the reshaped PSFs, pixel scale, and
+            offsets which allows for JIT compilation that treats them as
+            constants.
+
+            Args:
+                x (float):
+                    x position in lambda/D.
+                y (float):
+                    y position in lambda/D.
+
+            Returns:
+                jnp.ndarray:
+                    The off-axis PSF at the given position.
+            """
+            psf = create_avg_psf(
                 x,
                 y,
-                pixel_scale=self.pixel_scale.value,
-                x_offsets=self.x_offsets,
-                y_offsets=self.y_offsets,
-                x_grid=self.x_grid,
-                y_grid=self.y_grid,
-                reshaped_psfs=self.reshaped_psfs,
+                self.pixel_scale.value,
+                self.x_offsets,
+                self.y_offsets,
+                self.x_grid,
+                self.y_grid,
+                self.x_phasor,
+                self.y_phasor,
+                self.reshaped_psfs,
             )
+            _x, _y = convert_xy(x, y)
+            psf = x_shift(x, _x, psf, self.pixel_scale.value, self.x_phasor)
+            psf = y_shift(y, _y, psf, self.pixel_scale.value, self.y_phasor)
+            return psf
 
-        self.create_psf = jit(_create_psf)
+        self.create_psf = jit(create_psf)
+        self.create_psfs = jit(vmap(self.create_psf, in_axes=(0, 0)))
 
-        @jit
-        def create_psfs(x, y):
-            return jit(vmap(_create_psf)(x, y))
+    def create_psfs_parallel(self, x_vals, y_vals):
+        """Create off-axis PSFs at multiple positions in parallel using shard_map.
 
-        # create_fn_partial = partial(
-        #     create_fn,
-        #     pixel_scale=self.pixel_scale.value,
-        #     x_offsets=self.x_offsets,
-        #     y_offsets=self.y_offsets,
-        #     x_grid=self.x_grid,
-        #     y_grid=self.y_grid,
-        #     reshaped_psfs=self.reshaped_psfs,
-        #     static_argnums=(1, 2, 3, 4, 5, 6),
-        # )
+        If the number of (x, y) pairs doesn't evenly divide the number of devices,
+        we pad the inputs and then discard the extra results after processing.
 
-        # JIT-compile the scalar create_psf function
-        # self.create_psf = jit(create_fn_partial)
+        Args:
+            x_vals (jnp.ndarray):
+                Array of x-coordinates of shape (N,).
+            y_vals (jnp.ndarray):
+                Array of y-coordinates of shape (N,).
 
-        # JIT-compile the batched create_psf function using vmap
-        # self.create_psfs = jit(vmap(create_fn_partial))
-        # self.create_psfs = pmap(jit(create_fn_partial))
+        Returns:
+            jnp.ndarray:
+                Array of off-axis PSFs of shape (N, height, width).
+        """
+        D = self.cpu_cores  # Number of devices
+        N = x_vals.shape[0]
+
+        # Determine if we need padding
+        remainder = N % D
+        padding_needed = (D - remainder) if remainder != 0 else 0
+
+        # Pad inputs so total number of items is divisible by D
+        if padding_needed > 0:
+            x_vals_padded = jnp.pad(x_vals, (0, padding_needed), constant_values=0)
+            y_vals_padded = jnp.pad(y_vals, (0, padding_needed), constant_values=0)
+        else:
+            x_vals_padded = x_vals
+            y_vals_padded = y_vals
+
+        # Set up the device mesh for shard_map
+        mesh = Mesh(
+            mesh_utils.create_device_mesh(D),
+            axis_names=("i",),
+        )
+
+        # Distribute computation across devices. Each device gets N/D items.
+        # in_specs=P('i') will shard the first dimension across the 'i' axis.
+        psfs_padded = shard_map(
+            self.create_psfs,
+            mesh=mesh,
+            in_specs=P("i"),
+            out_specs=P("i"),
+        )(x_vals_padded, y_vals_padded)
+
+        # Truncate the padded results if we added any padding
+        if padding_needed > 0:
+            psfs = psfs_padded[:N]
+        else:
+            psfs = psfs_padded
+
+        return psfs
