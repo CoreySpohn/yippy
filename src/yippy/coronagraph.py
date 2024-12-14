@@ -39,7 +39,6 @@ class Coronagraph:
         sky_trans_file: str = "sky_trans.fits",
         x_symmetric: bool = True,
         y_symmetric: bool = False,
-        shift_2d: bool = False,
         cpu_cores: int = 1,
         platform: str = "cpu",
     ):
@@ -74,8 +73,6 @@ class Coronagraph:
                 Whether off-axis PSFs are symmetric about the x-axis. Default is True.
             y_symmetric (bool):
                 Whether off-axis PSFs are symmetric about the y-axis. Default is False.
-            shift_2d (bool):
-                Whether to use 2D shifting for off-axis PSFs. Default is False.
             cpu_cores (int):
                 Number of CPU cores to use. Default is 1.
             platform (str):
@@ -131,7 +128,6 @@ class Coronagraph:
                 self.pixel_scale,
                 x_symmetric,
                 y_symmetric,
-                shift_2d,
             )
 
         # Get the sky_trans mask
@@ -201,3 +197,11 @@ class Coronagraph:
             logger.info(f"PSF datacube saved to {datacube_path}.")
 
         self.psf_datacube = psfs
+
+    def __repr__(self):
+        """String representation of the Coronagraph object."""
+        base_str = f"Coronagraph {self.name} ({self.yip_path})\n"
+        base_str += f"{self.offax.type} off-axis PSFs, {self.offax.n_psfs} provided"
+        if self.has_psf_datacube:
+            base_str += f"\n{base_str}\nPSF datacube loaded"
+        return base_str
