@@ -150,7 +150,17 @@ class Coronagraph:
         logger.info(f"Created {yip_path.stem}")
 
     def create_psf_datacube(self, batch_size=128):
-        """Load the disk image from a file or generate it if it doesn't exist."""
+        """Load the PSF datacube from a file or generate it if it doesn't exist.
+
+        The PSF datacube is a 4D array of PSFs at each pixel (x psf offset,
+        y psf offset, x, y). Given the computational cost of generating this
+        datacube, it is only generated when needed and saved to a numpy binary
+        file in the yip_path directory.
+
+        Args:
+            batch_size (int):
+                Number of PSFs to generate in each batch. Default is 128.
+        """
         datacube_path = Path(self.yip_path, "psf_datacube.npy")
         if datacube_path.exists():
             logger.info(f"Loading PSF datacube from {datacube_path}.")
@@ -190,6 +200,4 @@ class Coronagraph:
             jnp.save(datacube_path, psfs)
             logger.info(f"PSF datacube saved to {datacube_path}.")
 
-        # self.psf_datacube = jnp.ascontiguousarray(psfs)
         self.psf_datacube = psfs
-        breakpoint()
