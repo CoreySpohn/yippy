@@ -10,7 +10,7 @@ from astropy.units import Quantity
 from lod_unit import lod
 from numpy.typing import NDArray
 
-from yippy.util import convert_to_lod, create_shift_mask, fft_shift, fft_shift_2d
+from yippy.util import convert_to_lod, create_shift_mask, fft_shift
 
 from .logger import logger
 
@@ -55,7 +55,6 @@ class OffAx:
         pixel_scale: Quantity,
         x_symmetric: bool,
         y_symmetric: bool,
-        shift_2d: bool = False,
     ) -> None:
         """Initializes the OffAx class by loading PSF and offset data from YIP.
 
@@ -68,8 +67,6 @@ class OffAx:
         # Load symmetry
         self.x_symmetric = x_symmetric
         self.y_symmetric = y_symmetric
-
-        self.shift_2d = shift_2d
 
         # Load off-axis PSF data (e.g. the planet) (unitless intensity maps)
         psfs = pyfits.getdata(Path(yip_dir, offax_data_file), 0)
@@ -169,6 +166,7 @@ class OffAx:
         x_indices = np.searchsorted(offsets_x, offsets[:, 0])
         y_indices = np.searchsorted(offsets_y, offsets[:, 1])
         self.reshaped_psfs[x_indices, y_indices] = psfs
+        self.n_psfs = len(offsets)
 
         self.x_offsets = offsets_x
         self.y_offsets = offsets_y
@@ -279,10 +277,7 @@ class OffAx:
             # array keeps track of which PSFs have contributions for each pixel.
             weight_array = np.zeros_like(psf)
             for i, near_psf in enumerate(near_psfs):
-                if self.shift_2d:
-                    shifted_psf = fft_shift_2d(near_psf, *near_shifts[i])
-                else:
-                    shifted_psf = fft_shift(near_psf, *near_shifts[i])
+                shifted_psf = fft_shift(near_psf, *near_shifts[i])
                 weight_mask = create_shift_mask(near_psf, *near_shifts[i], weights[i])
                 # Add the weighted PSF to the total PSF
                 psf += weight_mask * shifted_psf
@@ -321,7 +316,7 @@ class OffAx:
             psfs[i] = self.create_psf(x[i], y[i])
         return psfs
 
-    def parallel_psfs(
+    def create_psfs_parallel(
         self,
         x: np.ndarray,
         y: np.ndarray,

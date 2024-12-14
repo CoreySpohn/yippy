@@ -143,7 +143,10 @@ def fft_shift_x(image, shift_pixels, phasor):
     # Unpad the image to return to the original size
     image = padded[n_pad:img_edge, n_pad:img_edge]
 
-    return image
+    # Cut any negative values to zero. This occurs in the region with no
+    # information in the original image (e.g. the left pixels when moving
+    # a PSF rightwards)
+    return jnp.maximum(image, 0.0)
 
 
 def fft_shift_y(image, shift_pixels, phasor):
@@ -187,7 +190,432 @@ def fft_shift_y(image, shift_pixels, phasor):
     # Unpad the image to return to the original size
     image = padded[n_pad:img_edge, n_pad:img_edge]
 
-    return image
+    # Cut any negative values to zero. This occurs in the region with no
+    # information in the original image (e.g. the left pixels when moving
+    # a PSF rightwards)
+    return jnp.maximum(image, 0.0)
+
+
+def handle_shift_x_positive(mask, shift_x, x_grid):
+    """Zero out the left side of the mask for positive x shifts."""
+    n = jnp.ceil(shift_x).astype(jnp.int32)
+    n = jnp.clip(n, 0, mask.shape[1])
+    # Set mask to 0 where x_grid < n
+    return jnp.where(x_grid < n, 0.0, mask)
+
+
+def handle_shift_x_negative(mask, shift_x, x_grid):
+    """Zero out the right side of the mask for negative x shifts."""
+    n = jnp.ceil(-shift_x).astype(jnp.int32)
+    n = jnp.clip(n, 0, mask.shape[1])
+    # Set mask to 0 where x_grid >= (width - n)
+    return jnp.where(x_grid >= (mask.shape[1] - n), 0.0, mask)
+
+
+def handle_shift_y_positive(mask, shift_y, y_grid):
+    """Zero out the top side of the mask for positive y shifts."""
+    n = jnp.ceil(shift_y).astype(jnp.int32)
+    n = jnp.clip(n, 0, mask.shape[0])
+    # Set mask to 0 where y_grid < n
+    return jnp.where(y_grid < n, 0.0, mask)
+
+
+def handle_shift_y_negative(mask, shift_y, y_grid):
+    """Zero out the bottom side of the mask for negative y shifts."""
+    n = jnp.ceil(-shift_y).astype(jnp.int32)
+    n = jnp.clip(n, 0, mask.shape[0])
+    # Set mask to 0 where y_grid >= (height - n)
+    return jnp.where(y_grid >= (mask.shape[0] - n), 0.0, mask)
+
+
+def create_shift_mask_jax(psf, shift_x, shift_y, x_grid, y_grid, fill_val=1):
+    """Create a mask to identify valid pixels to average.
+
+    This function is useful because when the PSF is shifted there are empty
+    pixels, since they were outside the initial image, and should not be
+    included in the final average.
+
+    Args:
+        psf (jax.numpy.ndarray):
+            The PSF image to shift.
+        shift_x (float):
+            The shift in the x direction.
+        shift_y (float):
+            The shift in the y direction.
+        x_grid (jax.numpy.ndarray):
+            The x-coordinate grid.
+        y_grid (jax.numpy.ndarray):
+            The y-coordinate grid.
+        fill_val (float, optional):
+            The value to fill the mask with.
+
+    Returns:
+        jax.numpy.ndarray:
+            The mask to identify valid pixels to average.
+    """
+    mask = jnp.full_like(psf, fill_val)
+
+    mask = lax.cond(
+        jnp.sign(shift_x) == 1,
+        # Zero out the left side
+        lambda x: handle_shift_x_positive(x, shift_x, x_grid),
+        # Zero out the right side
+        lambda x: handle_shift_x_negative(x, shift_x, x_grid),
+        mask,
+    )
+
+    mask = lax.cond(
+        jnp.sign(shift_y) == 1,
+        # Zero out the bottom side
+        lambda x: handle_shift_y_positive(x, shift_y, y_grid),
+        # Zero out the top side
+        lambda x: handle_shift_y_negative(x, shift_y, y_grid),
+        mask,
+    )
+
+    return mask
+
+
+def get_near_inds_offsets_1D(
+    x_offsets: jnp.ndarray, y_offsets: jnp.ndarray, _x: float, _y: float
+):
+    """Computes the nearest indices and offsets for the given _x position in 1D.
+
+    Args:
+        x_offsets (jnp.ndarray): 1D array of x offsets, sorted in ascending order.
+        y_offsets (jnp.ndarray): 1D array of y offsets.
+        _x (float): The x-coordinate for which to find nearby offsets.
+
+    Returns:
+        Tuple[jnp.ndarray, jnp.ndarray]:
+            - near_inds: Array of shape (2,) containing the indices of the two
+              surrounding points.
+            - near_offsets: Array of shape (2,) containing the corresponding x offsets.
+    """
+    # Find insertion index for _x
+    _x_ind = jnp.searchsorted(x_offsets, _x, side="left")
+
+    # Handle boundary conditions
+    x_ind_low = jnp.clip(_x_ind - 1, 0, x_offsets.size - 1)
+    x_ind_high = jnp.clip(_x_ind, 0, x_offsets.size - 1)
+
+    y_ind = 0
+
+    # Collect the two nearest indices
+    near_inds = jnp.array([[x_ind_low, y_ind], [x_ind_high, y_ind]])
+
+    # Extract the corresponding x offset values
+    x_vals_low = x_offsets[x_ind_low]
+    x_vals_high = x_offsets[x_ind_high]
+    y_val = y_offsets[y_ind]
+
+    near_offsets = jnp.array([[x_vals_low, y_val], [x_vals_high, y_val]])
+
+    return near_inds, near_offsets
+
+
+def create_avg_psf_1D(
+    x: float,
+    y: float,
+    pixel_scale: float,
+    x_offsets: jnp.ndarray,
+    y_offsets: jnp.ndarray,
+    x_grid: jnp.ndarray,
+    y_grid: jnp.ndarray,
+    x_phasor: jnp.ndarray,
+    y_phasor: jnp.ndarray,
+    reshaped_psfs: jnp.ndarray,
+):
+    """Creates and returns the PSF at the specified off-axis position using JAX."""
+    # The core logic is similar to OffAx, but uses JAX operations
+    _x, _y = convert_xy_1D(x, y)
+
+    near_inds, near_offsets = get_near_inds_offsets_1D(x_offsets, y_offsets, _x, _y)
+
+    near_psfs = reshaped_psfs[near_inds[:, 0], near_inds[:, 1]]
+
+    near_shifts = (jnp.array([_x, _y]) - near_offsets) / pixel_scale
+    near_diffs = jnp.linalg.norm(near_shifts, axis=1)
+    sigma = 0.25
+    # Adding a small value to avoid division by zero
+    weights = jnp.exp(-(near_diffs**2) / (2 * sigma**2)) + 1e-16
+    weights /= weights.sum()
+
+    # Manually shift each PSF
+    shifted_psf1, mask1 = shift_and_mask(
+        near_psfs[0],
+        near_shifts[0, 0],
+        near_shifts[0, 1],
+        weights[0],
+        x_grid,
+        y_grid,
+        x_phasor,
+        y_phasor,
+    )
+    shifted_psf2, mask2 = shift_and_mask(
+        near_psfs[1],
+        near_shifts[1, 0],
+        near_shifts[1, 1],
+        weights[1],
+        x_grid,
+        y_grid,
+        x_phasor,
+        y_phasor,
+    )
+
+    # Accumulate the weighted PSFs and the weight masks
+    psf = shifted_psf1 + shifted_psf2
+    weight_array = mask1 + mask2
+
+    # Normalize the PSF
+    safe_reciprocal = jnp.where(weight_array != 0, 1.0 / weight_array, 0.0)
+    psf = psf * safe_reciprocal
+
+    return psf
+
+
+def create_avg_psf_2DQ(
+    x: float,
+    y: float,
+    pixel_scale: float,
+    x_offsets: jnp.ndarray,
+    y_offsets: jnp.ndarray,
+    x_grid: jnp.ndarray,
+    y_grid: jnp.ndarray,
+    x_phasor: jnp.ndarray,
+    y_phasor: jnp.ndarray,
+    reshaped_psfs: jnp.ndarray,
+):
+    """Creates and returns the PSF at the specified off-axis position using JAX."""
+    # The core logic is similar to OffAx, but uses JAX operations
+    _x, _y = convert_xy_2DQ(x, y)
+
+    near_inds, near_offsets = get_near_inds_offsets_2D(x_offsets, y_offsets, _x, _y)
+
+    near_psfs = reshaped_psfs[near_inds[:, 0], near_inds[:, 1]]
+
+    near_shifts = (jnp.array([_x, _y]) - near_offsets) / pixel_scale
+    near_diffs = jnp.linalg.norm(near_shifts, axis=1)
+    sigma = 0.25
+    # Adding a small value to avoid division by zero
+    weights = jnp.exp(-(near_diffs**2) / (2 * sigma**2)) + 1e-16
+    weights /= weights.sum()
+
+    # Manually shift each PSF
+    shifted_psf1, mask1 = shift_and_mask(
+        near_psfs[0],
+        near_shifts[0, 0],
+        near_shifts[0, 1],
+        weights[0],
+        x_grid,
+        y_grid,
+        x_phasor,
+        y_phasor,
+    )
+    shifted_psf2, mask2 = shift_and_mask(
+        near_psfs[1],
+        near_shifts[1, 0],
+        near_shifts[1, 1],
+        weights[1],
+        x_grid,
+        y_grid,
+        x_phasor,
+        y_phasor,
+    )
+    shifted_psf3, mask3 = shift_and_mask(
+        near_psfs[2],
+        near_shifts[2, 0],
+        near_shifts[2, 1],
+        weights[2],
+        x_grid,
+        y_grid,
+        x_phasor,
+        y_phasor,
+    )
+    shifted_psf4, mask4 = shift_and_mask(
+        near_psfs[3],
+        near_shifts[3, 0],
+        near_shifts[3, 1],
+        weights[3],
+        x_grid,
+        y_grid,
+        x_phasor,
+        y_phasor,
+    )
+
+    # Accumulate the weighted PSFs and the weight masks
+    psf = shifted_psf1 + shifted_psf2 + shifted_psf3 + shifted_psf4
+    weight_array = mask1 + mask2 + mask3 + mask4
+
+    safe_reciprocal = jnp.where(weight_array != 0, 1.0 / weight_array, 0.0)
+    psf = psf * safe_reciprocal
+
+    return psf
+
+
+def get_near_inds_offsets_2D(
+    x_offsets: jnp.ndarray, y_offsets: jnp.ndarray, _x: float, _y: float
+):
+    """Computes the nearest indices and offsets for the given (_x, _y) position in 2D.
+
+    Args:
+        x_offsets (jnp.ndarray): 1D array of x offsets, sorted in ascending order.
+        y_offsets (jnp.ndarray): 1D array of y offsets, sorted in ascending order.
+        _x (float): The x-coordinate for which to find nearby offsets.
+        _y (float): The y-coordinate for which to find nearby offsets.
+
+    Returns:
+        Tuple[jnp.ndarray, jnp.ndarray]:
+            - near_inds: Array of shape (4, 2) containing the indices of the
+              four surrounding points.
+            - near_offsets: Array of shape (4, 2) containing the corresponding
+              (x, y) offsets.
+    """
+    # Find insertion indices for _x and _y
+    _x_ind = jnp.searchsorted(x_offsets, _x, side="left")
+    _y_ind = jnp.searchsorted(y_offsets, _y, side="left")
+
+    # Handle boundary conditions for x indices
+    x_ind_low = jnp.clip(_x_ind - 1, 0, x_offsets.size - 1)
+    x_ind_high = jnp.clip(_x_ind, 0, x_offsets.size - 1)
+
+    # Handle boundary conditions for y indices
+    y_ind_low = jnp.clip(_y_ind - 1, 0, y_offsets.size - 1)
+    y_ind_high = jnp.clip(_y_ind, 0, y_offsets.size - 1)
+
+    # Collect the two nearest indices for x and y
+    x_inds = jnp.array([x_ind_low, x_ind_high])
+    y_inds = jnp.array([y_ind_low, y_ind_high])
+
+    # Manually create the four combinations without using meshgrid
+    near_inds = jnp.array(
+        [
+            [x_inds[0], y_inds[0]],
+            [x_inds[0], y_inds[1]],
+            [x_inds[1], y_inds[0]],
+            [x_inds[1], y_inds[1]],
+        ]
+    )
+
+    # Extract the corresponding x and y offset values
+    x_vals_low = x_offsets[x_inds[0]]
+    x_vals_high = x_offsets[x_inds[1]]
+    y_vals_low = y_offsets[y_inds[0]]
+    y_vals_high = y_offsets[y_inds[1]]
+
+    # Manually create the corresponding (x, y) offset combinations
+    near_offsets = jnp.array(
+        [
+            [x_vals_low, y_vals_low],
+            [x_vals_low, y_vals_high],
+            [x_vals_high, y_vals_low],
+            [x_vals_high, y_vals_high],
+        ]
+    )
+    return near_inds, near_offsets
+
+
+def shift_and_mask(
+    near_psf, shift_x, shift_y, weight, x_grid, y_grid, x_phasor, y_phasor
+):
+    """Shifts the PSF in x and y directions and applies a weight mask.
+
+    Args:
+        near_psf (jax.numpy.ndarray): The PSF image to shift.
+        shift_x (float): Shift in the x-direction.
+        shift_y (float): Shift in the y-direction.
+        weight (float): Weight for the PSF.
+        x_grid (jax.numpy.ndarray): The x-coordinate grid.
+        y_grid (jax.numpy.ndarray): The y-coordinate grid.
+        x_phasor (jax.numpy.ndarray): Precomputed components for the Fourier shift.
+        y_phasor (jax.numpy.ndarray): Precomputed components for the Fourier shift.
+
+    Returns:
+        Tuple[jax.numpy.ndarray, jax.numpy.ndarray]:
+            - Weighted shifted PSF.
+            - Weight mask.
+    """
+    # Shift the PSF in x and y directions
+    shifted_psf = fft_shift_x(near_psf, shift_x, x_phasor)
+    shifted_psf = fft_shift_y(shifted_psf, shift_y, y_phasor)
+
+    # Create the weight mask
+    weight_mask = create_shift_mask_jax(
+        near_psf, shift_x, shift_y, x_grid, y_grid, fill_val=weight
+    )
+
+    # Apply the weight mask
+    weighted_psf = weight_mask * shifted_psf
+
+    return weighted_psf, weight_mask
+
+
+def convert_xy_1D(x, y):
+    """Converts x and y to 1D coordinates."""
+    return jnp.sqrt(x**2 + y**2), 0
+
+
+def convert_xy_2DQ(x, y):
+    """Converts x and y to 2D quarter symmetric coordinates."""
+    return jnp.abs(x), jnp.abs(y)
+
+
+def convert_xy_2D(x, y):
+    """Converts x and y to 2D coordinates."""
+    return x, y
+
+
+def x_basic_shift(input_val, converted_val, PSF, pixel_scale, x_phasor):
+    """Shifts the PSF to the specified x position."""
+    shift = (input_val - converted_val) / pixel_scale
+    return fft_shift_x(PSF, shift, x_phasor)
+
+
+def y_basic_shift(input_val, converted_val, PSF, pixel_scale, y_phasor):
+    """Shifts the PSF to the specified y position."""
+    shift = (input_val - converted_val) / pixel_scale
+    return fft_shift_y(PSF, shift, y_phasor)
+
+
+def x_symmetric_shift(input_val, converted_val, PSF, pixel_scale, x_phasor):
+    """Shifts the PSF to the specified position assuming symmetry about x=0."""
+    flip = jnp.sign(input_val) == -1
+    # Apply a horizontal flip if the input value is negative
+    _PSF = lax.cond(
+        flip,
+        lambda _: jnp.fliplr(PSF),
+        lambda _: PSF,
+        operand=None,
+    )
+    # Calculate the distance to shift the PSF
+    shift = lax.cond(
+        flip,
+        lambda _: (input_val + converted_val) / pixel_scale,
+        lambda _: (input_val - converted_val) / pixel_scale,
+        operand=None,
+    )
+    # Perform shift
+    return fft_shift_x(_PSF, shift, x_phasor)
+
+
+def y_symmetric_shift(input_val, converted_val, PSF, pixel_scale, y_phasor):
+    """Shifts the PSF to the specified position assuming symmetry about y=0."""
+    flip = jnp.sign(input_val) == -1
+    # Apply a vertical flip if the input value is negative
+    _PSF = lax.cond(
+        flip,
+        lambda _: jnp.flipud(PSF),
+        lambda _: PSF,
+        operand=None,
+    )
+    # Get the distance to shift the PSF
+    shift = lax.cond(
+        flip,
+        lambda _: (input_val + converted_val) / pixel_scale,
+        lambda _: (input_val - converted_val) / pixel_scale,
+        operand=None,
+    )
+    return fft_shift_y(_PSF, shift, y_phasor)
 
 
 def fft_rotate_jax(image, rot_deg):
@@ -496,426 +924,3 @@ def rot90_helper_jax(image, n_rot):
     )
 
     return _img
-
-
-def handle_shift_x_positive(mask, shift_x, x_grid):
-    """Zero out the left side of the mask for positive x shifts."""
-    n = jnp.ceil(shift_x).astype(jnp.int32)
-    n = jnp.clip(n, 0, mask.shape[1])
-    # Set mask to 0 where x_grid < n
-    return jnp.where(x_grid < n, 0.0, mask)
-
-
-def handle_shift_x_negative(mask, shift_x, x_grid):
-    """Zero out the right side of the mask for negative x shifts."""
-    n = jnp.ceil(-shift_x).astype(jnp.int32)
-    n = jnp.clip(n, 0, mask.shape[1])
-    # Set mask to 0 where x_grid >= (width - n)
-    return jnp.where(x_grid >= (mask.shape[1] - n), 0.0, mask)
-
-
-def handle_shift_y_positive(mask, shift_y, y_grid):
-    """Zero out the top side of the mask for positive y shifts."""
-    n = jnp.ceil(shift_y).astype(jnp.int32)
-    n = jnp.clip(n, 0, mask.shape[0])
-    # Set mask to 0 where y_grid < n
-    return jnp.where(y_grid < n, 0.0, mask)
-
-
-def handle_shift_y_negative(mask, shift_y, y_grid):
-    """Zero out the bottom side of the mask for negative y shifts."""
-    n = jnp.ceil(-shift_y).astype(jnp.int32)
-    n = jnp.clip(n, 0, mask.shape[0])
-    # Set mask to 0 where y_grid >= (height - n)
-    return jnp.where(y_grid >= (mask.shape[0] - n), 0.0, mask)
-
-
-def create_shift_mask_jax(psf, shift_x, shift_y, x_grid, y_grid, fill_val=1):
-    """Create a mask to identify valid pixels to average.
-
-    This function is useful because when the PSF is shifted there are empty
-    pixels, since they were outside the initial image, and should not be
-    included in the final average.
-
-    Args:
-        psf (jax.numpy.ndarray):
-            The PSF image to shift.
-        shift_x (float):
-            The shift in the x direction.
-        shift_y (float):
-            The shift in the y direction.
-        x_grid (jax.numpy.ndarray):
-            The x-coordinate grid.
-        y_grid (jax.numpy.ndarray):
-            The y-coordinate grid.
-        fill_val (float, optional):
-            The value to fill the mask with.
-
-    Returns:
-        jax.numpy.ndarray:
-            The mask to identify valid pixels to average.
-    """
-    mask = jnp.full_like(psf, fill_val)
-
-    mask = lax.cond(
-        jnp.sign(shift_x) == 1,
-        # Zero out the left side
-        lambda x: handle_shift_x_positive(x, shift_x, x_grid),
-        # Zero out the right side
-        lambda x: handle_shift_x_negative(x, shift_x, x_grid),
-        mask,
-    )
-
-    mask = lax.cond(
-        jnp.sign(shift_y) == 1,
-        # Zero out the bottom side
-        lambda x: handle_shift_y_positive(x, shift_y, y_grid),
-        # Zero out the top side
-        lambda x: handle_shift_y_negative(x, shift_y, y_grid),
-        mask,
-    )
-
-    return mask
-
-
-def get_near_inds_offsets_1D(
-    x_offsets: jnp.ndarray, y_offsets: jnp.ndarray, _x: float, _y: float
-):
-    """Computes the nearest indices and offsets for the given _x position in 1D.
-
-    Args:
-        x_offsets (jnp.ndarray): 1D array of x offsets, sorted in ascending order.
-        y_offsets (jnp.ndarray): 1D array of y offsets.
-        _x (float): The x-coordinate for which to find nearby offsets.
-
-    Returns:
-        Tuple[jnp.ndarray, jnp.ndarray]:
-            - near_inds: Array of shape (2,) containing the indices of the two
-              surrounding points.
-            - near_offsets: Array of shape (2,) containing the corresponding x offsets.
-    """
-    # Find insertion index for _x
-    _x_ind = jnp.searchsorted(x_offsets, _x, side="left")
-
-    # Handle boundary conditions
-    x_ind_low = jnp.clip(_x_ind - 1, 0, x_offsets.size - 1)
-    x_ind_high = jnp.clip(_x_ind, 0, x_offsets.size - 1)
-
-    y_ind = 0
-
-    # Collect the two nearest indices
-    near_inds = jnp.array([[x_ind_low, y_ind], [x_ind_high, y_ind]])
-
-    # Extract the corresponding x offset values
-    x_vals_low = x_offsets[x_ind_low]
-    x_vals_high = x_offsets[x_ind_high]
-    y_val = y_offsets[y_ind]
-
-    near_offsets = jnp.array([[x_vals_low, y_val], [x_vals_high, y_val]])
-
-    return near_inds, near_offsets
-
-
-def create_avg_psf_1D(
-    x: float,
-    y: float,
-    pixel_scale: float,
-    x_offsets: jnp.ndarray,
-    y_offsets: jnp.ndarray,
-    x_grid: jnp.ndarray,
-    y_grid: jnp.ndarray,
-    x_phasor: jnp.ndarray,
-    y_phasor: jnp.ndarray,
-    reshaped_psfs: jnp.ndarray,
-):
-    """Creates and returns the PSF at the specified off-axis position using JAX."""
-    # The core logic is similar to OffAx, but uses JAX operations
-    _x, _y = convert_xy_1D(x, y)
-
-    near_inds, near_offsets = get_near_inds_offsets_1D(x_offsets, y_offsets, _x, _y)
-
-    near_psfs = reshaped_psfs[near_inds[:, 0], near_inds[:, 1]]
-
-    near_shifts = (jnp.array([_x, _y]) - near_offsets) / pixel_scale
-    near_diffs = jnp.linalg.norm(near_shifts, axis=1)
-    sigma = 0.25
-    weights = jnp.exp(-(near_diffs**2) / (2 * sigma**2))
-    weights /= weights.sum()
-
-    # Manually shift each PSF
-    shifted_psf1, mask1 = shift_and_mask(
-        near_psfs[0],
-        near_shifts[0, 0],
-        near_shifts[0, 1],
-        weights[0],
-        x_grid,
-        y_grid,
-        x_phasor,
-        y_phasor,
-    )
-    shifted_psf2, mask2 = shift_and_mask(
-        near_psfs[1],
-        near_shifts[1, 0],
-        near_shifts[1, 1],
-        weights[1],
-        x_grid,
-        y_grid,
-        x_phasor,
-        y_phasor,
-    )
-
-    # Accumulate the weighted PSFs and the weight masks
-    psf = shifted_psf1 + shifted_psf2
-    weight_array = mask1 + mask2
-
-    # Normalize the PSF
-    safe_reciprocal = jnp.where(weight_array != 0, 1.0 / weight_array, 0.0)
-    psf = psf * safe_reciprocal
-    # temp1 = psf / mask1
-    # temp2 = psf / mask2
-    # psf = psf / weight_array
-
-    return psf
-
-
-def create_avg_psf_2DQ(
-    x: float,
-    y: float,
-    pixel_scale: float,
-    x_offsets: jnp.ndarray,
-    y_offsets: jnp.ndarray,
-    x_grid: jnp.ndarray,
-    y_grid: jnp.ndarray,
-    x_phasor: jnp.ndarray,
-    y_phasor: jnp.ndarray,
-    reshaped_psfs: jnp.ndarray,
-):
-    """Creates and returns the PSF at the specified off-axis position using JAX."""
-    # The core logic is similar to OffAx, but uses JAX operations
-    _x, _y = convert_xy_2DQ(x, y)
-
-    near_inds, near_offsets = get_near_inds_offsets_2D(x_offsets, y_offsets, _x, _y)
-
-    near_psfs = reshaped_psfs[near_inds[:, 0], near_inds[:, 1]]
-
-    near_shifts = (jnp.array([_x, _y]) - near_offsets) / pixel_scale
-    near_diffs = jnp.linalg.norm(near_shifts, axis=1)
-    sigma = 0.25
-    weights = jnp.exp(-(near_diffs**2) / (2 * sigma**2))
-    weights /= weights.sum()
-
-    # Manually shift each PSF
-    shifted_psf1, mask1 = shift_and_mask(
-        near_psfs[0],
-        near_shifts[0, 0],
-        near_shifts[0, 1],
-        weights[0],
-        x_grid,
-        y_grid,
-        x_phasor,
-        y_phasor,
-    )
-    shifted_psf2, mask2 = shift_and_mask(
-        near_psfs[1],
-        near_shifts[1, 0],
-        near_shifts[1, 1],
-        weights[1],
-        x_grid,
-        y_grid,
-        x_phasor,
-        y_phasor,
-    )
-    shifted_psf3, mask3 = shift_and_mask(
-        near_psfs[2],
-        near_shifts[2, 0],
-        near_shifts[2, 1],
-        weights[2],
-        x_grid,
-        y_grid,
-        x_phasor,
-        y_phasor,
-    )
-    shifted_psf4, mask4 = shift_and_mask(
-        near_psfs[3],
-        near_shifts[3, 0],
-        near_shifts[3, 1],
-        weights[3],
-        x_grid,
-        y_grid,
-        x_phasor,
-        y_phasor,
-    )
-
-    # Accumulate the weighted PSFs and the weight masks
-    psf = shifted_psf1 + shifted_psf2 + shifted_psf3 + shifted_psf4
-    weight_array = mask1 + mask2 + mask3 + mask4
-
-    safe_reciprocal = jnp.where(weight_array != 0, 1.0 / weight_array, 0.0)
-    psf = psf * safe_reciprocal
-
-    return psf
-
-
-def get_near_inds_offsets_2D(
-    x_offsets: jnp.ndarray, y_offsets: jnp.ndarray, _x: float, _y: float
-):
-    """Computes the nearest indices and offsets for the given (_x, _y) position in 2D.
-
-    Args:
-        x_offsets (jnp.ndarray): 1D array of x offsets, sorted in ascending order.
-        y_offsets (jnp.ndarray): 1D array of y offsets, sorted in ascending order.
-        _x (float): The x-coordinate for which to find nearby offsets.
-        _y (float): The y-coordinate for which to find nearby offsets.
-
-    Returns:
-        Tuple[jnp.ndarray, jnp.ndarray]:
-            - near_inds: Array of shape (4, 2) containing the indices of the
-              four surrounding points.
-            - near_offsets: Array of shape (4, 2) containing the corresponding
-              (x, y) offsets.
-    """
-    # Find insertion indices for _x and _y
-    _x_ind = jnp.searchsorted(x_offsets, _x, side="left")
-    _y_ind = jnp.searchsorted(y_offsets, _y, side="left")
-
-    # Handle boundary conditions for x indices
-    x_ind_low = jnp.clip(_x_ind - 1, 0, x_offsets.size - 1)
-    x_ind_high = jnp.clip(_x_ind, 0, x_offsets.size - 1)
-
-    # Handle boundary conditions for y indices
-    y_ind_low = jnp.clip(_y_ind - 1, 0, y_offsets.size - 1)
-    y_ind_high = jnp.clip(_y_ind, 0, y_offsets.size - 1)
-
-    # Collect the two nearest indices for x and y
-    x_inds = jnp.array([x_ind_low, x_ind_high])
-    y_inds = jnp.array([y_ind_low, y_ind_high])
-
-    # Manually create the four combinations without using meshgrid
-    near_inds = jnp.array(
-        [
-            [x_inds[0], y_inds[0]],
-            [x_inds[0], y_inds[1]],
-            [x_inds[1], y_inds[0]],
-            [x_inds[1], y_inds[1]],
-        ]
-    )
-
-    # Extract the corresponding x and y offset values
-    x_vals_low = x_offsets[x_inds[0]]
-    x_vals_high = x_offsets[x_inds[1]]
-    y_vals_low = y_offsets[y_inds[0]]
-    y_vals_high = y_offsets[y_inds[1]]
-
-    # Manually create the corresponding (x, y) offset combinations
-    near_offsets = jnp.array(
-        [
-            [x_vals_low, y_vals_low],
-            [x_vals_low, y_vals_high],
-            [x_vals_high, y_vals_low],
-            [x_vals_high, y_vals_high],
-        ]
-    )
-    return near_inds, near_offsets
-
-
-def shift_and_mask(
-    near_psf, shift_x, shift_y, weight, x_grid, y_grid, x_phasor, y_phasor
-):
-    """Shifts the PSF in x and y directions and applies a weight mask.
-
-    Args:
-        near_psf (jax.numpy.ndarray): The PSF image to shift.
-        shift_x (float): Shift in the x-direction.
-        shift_y (float): Shift in the y-direction.
-        weight (float): Weight for the PSF.
-        x_grid (jax.numpy.ndarray): The x-coordinate grid.
-        y_grid (jax.numpy.ndarray): The y-coordinate grid.
-        x_phasor (jax.numpy.ndarray): Precomputed components for the Fourier shift.
-        y_phasor (jax.numpy.ndarray): Precomputed components for the Fourier shift.
-
-    Returns:
-        Tuple[jax.numpy.ndarray, jax.numpy.ndarray]:
-            - Weighted shifted PSF.
-            - Weight mask.
-    """
-    # Shift the PSF in x and y directions
-    shifted_psf = fft_shift_x(near_psf, shift_x, x_phasor)
-    shifted_psf = fft_shift_y(shifted_psf, shift_y, y_phasor)
-
-    # Create the weight mask
-    weight_mask = create_shift_mask_jax(
-        near_psf, shift_x, shift_y, x_grid, y_grid, fill_val=weight
-    )
-
-    # Apply the weight mask
-    weighted_psf = weight_mask * shifted_psf
-
-    return weighted_psf, weight_mask
-
-
-def convert_xy_1D(x, y):
-    """Converts x and y to 1D coordinates."""
-    return jnp.sqrt(x**2 + y**2), 0
-
-
-def convert_xy_2DQ(x, y):
-    """Converts x and y to 2D quarter symmetric coordinates."""
-    return jnp.abs(x), jnp.abs(y)
-
-
-def convert_xy_2D(x, y):
-    """Converts x and y to 2D coordinates."""
-    return x, y
-
-
-def x_basic_shift(input_val, converted_val, PSF, pixel_scale, x_phasor):
-    """Shifts the PSF to the specified x position."""
-    shift = (input_val - converted_val) / pixel_scale
-    return fft_shift_x(PSF, shift, x_phasor)
-
-
-def y_basic_shift(input_val, converted_val, PSF, pixel_scale, y_phasor):
-    """Shifts the PSF to the specified y position."""
-    shift = (input_val - converted_val) / pixel_scale
-    return fft_shift_y(PSF, shift, y_phasor)
-
-
-def x_symmetric_shift(input_val, converted_val, PSF, pixel_scale, x_phasor):
-    """Shifts the PSF to the specified position assuming symmetry about x=0."""
-    flip = jnp.sign(input_val) == -1
-    # Apply a horizontal flip if the input value is negative
-    _PSF = lax.cond(
-        flip,
-        lambda _: jnp.fliplr(PSF),
-        lambda _: PSF,
-        operand=None,
-    )
-    # Calculate the distance to shift the PSF
-    shift = lax.cond(
-        flip,
-        lambda _: (input_val + converted_val) / pixel_scale,
-        lambda _: (input_val - converted_val) / pixel_scale,
-        operand=None,
-    )
-    # Perform shift
-    return fft_shift_x(_PSF, shift, x_phasor)
-
-
-def y_symmetric_shift(input_val, converted_val, PSF, pixel_scale, y_phasor):
-    """Shifts the PSF to the specified position assuming symmetry about y=0."""
-    flip = jnp.sign(input_val) == -1
-    # Apply a vertical flip if the input value is negative
-    _PSF = lax.cond(
-        flip,
-        lambda _: jnp.flipud(PSF),
-        lambda _: PSF,
-        operand=None,
-    )
-    # Get the distance to shift the PSF
-    shift = lax.cond(
-        flip,
-        lambda _: (input_val + converted_val) / pixel_scale,
-        lambda _: (input_val - converted_val) / pixel_scale,
-        operand=None,
-    )
-    return fft_shift_y(_PSF, shift, y_phasor)
