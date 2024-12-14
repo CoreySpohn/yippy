@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "yippy"
 authors = [{ name = "Corey Spohn", email = "corey.a.spohn@nasa.gov" }]
-description = "A minimal wrapper to create a coronagraph object from a yield input package"
+description = "A Python and JAX wrapper to create a coronagraph object from a yield input package"
 dependencies = [
-    "astropy",
-    "scipy",
-    "lod_unit",
-    "tqdm",
-    "xarray",
-    "pre-commit>=4.0.1",
+  "astropy",
+  "scipy",
+  "lod_unit",
+  "tqdm",
+  "pre-commit>=4.0.1",
+  "jax",
 ]
 license = { file = "LICENSE" }
 dynamic = ['readme', 'version']
