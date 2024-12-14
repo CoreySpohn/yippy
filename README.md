@@ -4,10 +4,9 @@
 </p>
 
 <p align="center">
-  <a href="https://codecov.io/gh/CoreySpohn/lod_unit"><img src="https://img.shields.io/codecov/c/github/coreyspohn/lod_unit?token=UCUVYCRWVG&style=flat-square&logo=codecov" alt="Codecov"/></a>
-  <a href="https://pypi.org/project/lod_unit/"><img src="https://img.shields.io/pypi/v/lod_unit.svg?style=flat-square" alt="PyPI"/></a>
-  <a href="https://lod-unit.readthedocs.io"><img src="https://readthedocs.org/projects/lod_unit/badge/?version=latest&style=flat-square" alt="Documentation Status"/></a>
-  <a href="https://github.com/coreyspohn/lod_unit/actions/workflows/ci.yml/"><img src="https://img.shields.io/github/actions/workflow/status/coreyspohn/lod_unit/ci.yml?branch=main&logo=github&style=flat-square" alt="CI"/></a>
+  <a href="https://pypi.org/project/yippy/"><img src="https://img.shields.io/pypi/v/yippy.svg?style=flat-square" alt="PyPI"/></a>
+  <a href="https://yippy.readthedocs.io"><img src="https://readthedocs.org/projects/yippy/badge/?version=latest&style=flat-square" alt="Documentation Status"/></a>
+  <!-- <a href="https://github.com/coreyspohn/yippy/actions/workflows/ci.yml/"><img src="https://img.shields.io/github/actions/workflow/status/coreyspohn/yippy/ci.yml?branch=main&logo=github&style=flat-square" alt="CI"/></a> -->
 </p>
 
 
