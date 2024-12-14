@@ -143,7 +143,10 @@ def fft_shift_x(image, shift_pixels, phasor):
     # Unpad the image to return to the original size
     image = padded[n_pad:img_edge, n_pad:img_edge]
 
-    return image
+    # Cut any negative values to zero. This occurs in the region with no
+    # information in the original image (e.g. the left pixels when moving
+    # a PSF rightwards)
+    return jnp.maximum(image, 0.0)
 
 
 def fft_shift_y(image, shift_pixels, phasor):
@@ -187,7 +190,10 @@ def fft_shift_y(image, shift_pixels, phasor):
     # Unpad the image to return to the original size
     image = padded[n_pad:img_edge, n_pad:img_edge]
 
-    return image
+    # Cut any negative values to zero. This occurs in the region with no
+    # information in the original image (e.g. the left pixels when moving
+    # a PSF rightwards)
+    return jnp.maximum(image, 0.0)
 
 
 def handle_shift_x_positive(mask, shift_x, x_grid):
