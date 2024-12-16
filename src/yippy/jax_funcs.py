@@ -228,7 +228,7 @@ def handle_shift_y_negative(mask, shift_y, y_grid):
     return jnp.where(y_grid >= (mask.shape[0] - n), 0.0, mask)
 
 
-def create_shift_mask_jax(psf, shift_x, shift_y, x_grid, y_grid, fill_val=1):
+def create_shift_mask(psf, shift_x, shift_y, x_grid, y_grid, fill_val=1):
     """Create a mask to identify valid pixels to average.
 
     This function is useful because when the PSF is shifted there are empty
@@ -540,7 +540,7 @@ def shift_and_mask(
     shifted_psf = fft_shift_y(shifted_psf, shift_y, y_phasor)
 
     # Create the weight mask
-    weight_mask = create_shift_mask_jax(
+    weight_mask = create_shift_mask(
         near_psf, shift_x, shift_y, x_grid, y_grid, fill_val=weight
     )
 
@@ -565,15 +565,31 @@ def convert_xy_2D(x, y):
     return x, y
 
 
+def basic_shift_val(input_val, converted_val, pixel_scale):
+    """Calculates the shift in pixels for a basic shift."""
+    return (input_val - converted_val) / pixel_scale
+
+
+def sym_shift_val(input_val, converted_val, pixel_scale):
+    """Calculates the shift in pixels for a symmetric shift."""
+    flip = jnp.sign(input_val) == -1
+    return lax.cond(
+        flip,
+        lambda _: (input_val + converted_val) / pixel_scale,
+        lambda _: (input_val - converted_val) / pixel_scale,
+        operand=None,
+    )
+
+
 def x_basic_shift(input_val, converted_val, PSF, pixel_scale, x_phasor):
     """Shifts the PSF to the specified x position."""
-    shift = (input_val - converted_val) / pixel_scale
+    shift = basic_shift_val(input_val, converted_val, pixel_scale)
     return fft_shift_x(PSF, shift, x_phasor)
 
 
 def y_basic_shift(input_val, converted_val, PSF, pixel_scale, y_phasor):
     """Shifts the PSF to the specified y position."""
-    shift = (input_val - converted_val) / pixel_scale
+    shift = basic_shift_val(input_val, converted_val, pixel_scale)
     return fft_shift_y(PSF, shift, y_phasor)
 
 
@@ -588,13 +604,8 @@ def x_symmetric_shift(input_val, converted_val, PSF, pixel_scale, x_phasor):
         operand=None,
     )
     # Calculate the distance to shift the PSF
-    shift = lax.cond(
-        flip,
-        lambda _: (input_val + converted_val) / pixel_scale,
-        lambda _: (input_val - converted_val) / pixel_scale,
-        operand=None,
-    )
-    # Perform shift
+    shift = sym_shift_val(input_val, converted_val, pixel_scale)
+    # Apply the shift
     return fft_shift_x(_PSF, shift, x_phasor)
 
 
@@ -609,12 +620,8 @@ def y_symmetric_shift(input_val, converted_val, PSF, pixel_scale, y_phasor):
         operand=None,
     )
     # Get the distance to shift the PSF
-    shift = lax.cond(
-        flip,
-        lambda _: (input_val + converted_val) / pixel_scale,
-        lambda _: (input_val - converted_val) / pixel_scale,
-        operand=None,
-    )
+    shift = sym_shift_val(input_val, converted_val, pixel_scale)
+    # Apply the shift
     return fft_shift_y(_PSF, shift, y_phasor)
 
 

@@ -11,11 +11,14 @@ from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
 
 from .jax_funcs import (
+    basic_shift_val,
     convert_xy_1D,
     convert_xy_2DQ,
     create_avg_psf_1D,
     create_avg_psf_2DQ,
+    create_shift_mask,
     get_pad_info,
+    sym_shift_val,
     x_basic_shift,
     x_symmetric_shift,
     y_basic_shift,
@@ -67,21 +70,21 @@ class OffJAX(OffAx):
         # Convert the PSF data to JAX arrays
         ##############
         self.reshaped_psfs = device_put(jnp.array(self.reshaped_psfs))
+        n_pixels_orig, n_pad, img_edge, n_pixels_final = get_pad_info(
+            self.reshaped_psfs[0, 0], 1.5
+        )
 
         self.x_offsets = device_put(jnp.array(self.x_offsets))
         self.y_offsets = device_put(jnp.array(self.y_offsets))
         # Precompute and store coordinate grids based on PSF shape
         height, width = (self.reshaped_psfs.shape[2], self.reshaped_psfs.shape[3])
+        # height, width = (self.padded_psfs.shape[2], self.padded_psfs.shape[3])
 
         self.x_grid, self.y_grid = jnp.meshgrid(
             jnp.arange(width), jnp.arange(height), indexing="xy"
         )
         self.x_grid = device_put(self.x_grid)
         self.y_grid = device_put(self.y_grid)
-
-        n_pixels_orig, n_pad, img_edge, n_pixels_final = get_pad_info(
-            self.reshaped_psfs[0, 0], 1.5
-        )
 
         # Create the frequency grids
         ky = jnp.fft.fftfreq(n_pixels_final)
@@ -103,12 +106,16 @@ class OffJAX(OffAx):
 
         if self.x_symmetric:
             x_shift = x_symmetric_shift
+            x_shift_val = sym_shift_val
         else:
             x_shift = x_basic_shift
+            x_shift_val = basic_shift_val
         if self.y_symmetric:
             y_shift = y_symmetric_shift
+            y_shift_val = sym_shift_val
         else:
             y_shift = y_basic_shift
+            y_shift_val = basic_shift_val
 
         ##############
         # Create the JAX functions
@@ -130,7 +137,7 @@ class OffJAX(OffAx):
                 jnp.ndarray:
                     The off-axis PSF at the given position.
             """
-            psf = create_avg_psf(
+            avg_psf = create_avg_psf(
                 x,
                 y,
                 self.pixel_scale.value,
@@ -143,12 +150,17 @@ class OffJAX(OffAx):
                 self.reshaped_psfs,
             )
             _x, _y = convert_xy(x, y)
-            psf = x_shift(x, _x, psf, self.pixel_scale.value, self.x_phasor)
+            psf = x_shift(x, _x, avg_psf, self.pixel_scale.value, self.x_phasor)
             psf = y_shift(y, _y, psf, self.pixel_scale.value, self.y_phasor)
-            return psf
+            _x_shift = x_shift_val(x, _x, self.pixel_scale.value)
+            _y_shift = y_shift_val(y, _y, self.pixel_scale.value)
+            mask = create_shift_mask(
+                psf, _x_shift, _y_shift, self.x_grid, self.y_grid, 1
+            )
+            return psf * mask
 
         self.create_psf = jit(create_psf)
-        self.create_psfs = jit(vmap(self.create_psf, in_axes=(0, 0)))
+        self.create_psfs = jit(vmap(create_psf, in_axes=(0, 0)))
 
     def create_psfs_parallel(self, x_vals, y_vals):
         """Create off-axis PSFs at multiple positions in parallel using shard_map.
