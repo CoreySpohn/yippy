@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/CoreySpohn/yippy/compare/v1.7.0...v1.7.1) (2024-12-16)
+
+
+### Bug Fixes
+
+* Mask out pixels with no information ([b02b59b](https://github.com/CoreySpohn/yippy/commit/b02b59b86006b8aaac0cd3455ddc290b287d5de1))
+
 ## [1.7.0](https://github.com/CoreySpohn/yippy/compare/v1.6.0...v1.7.0) (2024-12-14)
 
 
