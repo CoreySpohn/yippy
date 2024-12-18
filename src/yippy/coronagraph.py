@@ -94,6 +94,7 @@ class Coronagraph:
         # Get pixel scale with units
         self.header = HeaderData.from_fits_header(stellar_intens_header)
         self.pixel_scale = self.header.pixscale
+        self.frac_obscured = self.header.obscured
 
         # Stellar intensity of the star being observed as function of stellar
         # angular diameter (unitless)
