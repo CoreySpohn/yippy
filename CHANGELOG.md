@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.2](https://github.com/CoreySpohn/yippy/compare/v1.7.1...v1.7.2) (2025-01-02)
+
+
+### Bug Fixes
+
+* Now passes lod values instead of lod quantities into the create_psf function ([64c9d2f](https://github.com/CoreySpohn/yippy/commit/64c9d2fbcfb335dbea7b88fc65fd28935748398c))
+
 ## [1.7.1](https://github.com/CoreySpohn/yippy/compare/v1.7.0...v1.7.1) (2024-12-16)
 
 
