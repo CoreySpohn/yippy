@@ -410,13 +410,11 @@ class OffAx:
             # Convert the x and y positions to lambda/D if they are in pixels
             if x.unit != lod:
                 x = convert_to_lod(x, self.center_x, self.pixel_scale, lam, D, dist)
-            else:
-                x = x.value
+            x = x.value
         if isinstance(y, Quantity):
             if y.unit != lod:
                 y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
-            else:
-                y = y.value
+            y = y.value
 
         if np.isscalar(x) and np.isscalar(y):
             return self.create_psf(x, y)
