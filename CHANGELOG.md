@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/CoreySpohn/yippy/compare/v1.7.2...v1.8.0) (2025-01-06)
+
+
+### Features
+
+* Add calculation of raw contrast and throughput ([a561efe](https://github.com/CoreySpohn/yippy/commit/a561efef0591aa975aeafcfa355f474f81e116c1))
+
 ## [1.7.2](https://github.com/CoreySpohn/yippy/compare/v1.7.1...v1.7.2) (2025-01-02)
 
 
