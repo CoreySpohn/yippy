@@ -56,11 +56,7 @@ class OffAx:
         x_symmetric: bool,
         y_symmetric: bool,
     ) -> None:
-        """Initializes the OffAx class by loading PSF and offset data from YIP.
-
-        Determines the type of coronagraph based on the symmetry and structure of the
-        offsets and chooses the correct PSF class (OneD, QuarterSymmetric) accordingly.
-        """
+        """Initializes the OffAx class by loading PSF and offset data from YIP."""
         # Pixel scale in lambda/D
         self.pixel_scale = pixel_scale
 
@@ -163,13 +159,14 @@ class OffAx:
 
         # Initialize the reshaped PSFs array to allow us to index by the offsets
         self.reshaped_psfs = np.empty((len(offsets_x), len(offsets_y), *psfs.shape[1:]))
-        x_indices = np.searchsorted(offsets_x, offsets[:, 0])
-        y_indices = np.searchsorted(offsets_y, offsets[:, 1])
-        self.reshaped_psfs[x_indices, y_indices] = psfs
+        self.x_inds = np.searchsorted(offsets_x, offsets[:, 0])
+        self.y_inds = np.searchsorted(offsets_y, offsets[:, 1])
+        self.reshaped_psfs[self.x_inds, self.y_inds] = psfs
         self.n_psfs = len(offsets)
 
         self.x_offsets = offsets_x
         self.y_offsets = offsets_y
+        # self.offsets = np.array(list(product(self.x_offsets, self.y_offsets)))
         self.x_range = np.array([self.x_offsets[0], self.x_offsets[-1]])
         self.y_range = np.array([self.y_offsets[0], self.y_offsets[-1]])
 

@@ -6,6 +6,8 @@ import astropy.io.fits as pyfits
 import astropy.units as u
 import jax.numpy as jnp
 import numpy as np
+from lod_unit import lod
+from scipy.interpolate import make_interp_spline
 from tqdm import tqdm
 
 from .header import HeaderData
@@ -15,6 +17,13 @@ from .offax import OffAx
 from .offjax import OffJAX
 from .sky_trans import SkyTrans
 from .stellar_intens import StellarIntens
+from .util import (
+    convert_to_pix,
+    extract_and_oversample_subarray,
+    load_coro_performance_from_fits,
+    measure_flux_in_oversampled_aperture,
+    save_coro_performance_to_fits,
+)
 
 
 class Coronagraph:
@@ -37,6 +46,7 @@ class Coronagraph:
         offax_data_file: str = "offax_psf.fits",
         offax_offsets_file: str = "offax_psf_offset_list.fits",
         sky_trans_file: str = "sky_trans.fits",
+        performance_file: str = "coro_perf.fits",
         x_symmetric: bool = True,
         y_symmetric: bool = False,
         cpu_cores: int = 1,
@@ -69,6 +79,8 @@ class Coronagraph:
                 offax_psf_offset_list.fits
             sky_trans_file (str):
                 Name of the sky transmission data file. Default is sky_trans.fits.
+            performance_file (str):
+                Name of the coronagraph performance (contrast, throughput) fits file.
             x_symmetric (bool):
                 Whether off-axis PSFs are symmetric about the x-axis. Default is True.
             y_symmetric (bool):
@@ -138,12 +150,37 @@ class Coronagraph:
         # y psf offset, x, y). Given the computational cost of generating this
         # datacube, it is only generated when needed.
         self.has_psf_datacube = False
-        logger.info(f"Created {yip_path.stem}")
 
         # Shape of the images in the PSFs
         self.psf_shape = np.array([self.header.naxis1, self.header.naxis2])
         assert self.psf_shape[0] == self.psf_shape[1], "PSF must be square"
         self.npixels = self.psf_shape[0]
+
+        # Get the contrast and throughput
+        perf_path = Path(self.yip_path, performance_file)
+        if perf_path.exists():
+            sep, throughput, raw_contrast = load_coro_performance_from_fits(
+                performance_file, self.yip_path
+            )
+        else:
+            logger.info("No precomputed performance file found. Computing now...")
+            sep_throughput, throughput = self.get_throughput_curve(plot=False)
+            sep_contrast, raw_contrast = self.get_contrast_curve(plot=False)
+
+            assert np.all(
+                sep_throughput == sep_contrast
+            ), "Mismatch in separations for performance parameters"
+            sep = sep_throughput
+
+            # Save to fits
+            save_coro_performance_to_fits(
+                sep, throughput, raw_contrast, performance_file, self.yip_path
+            )
+
+        # Create splines
+        self.throughput_interp = make_interp_spline(sep, throughput, k=3)
+        self.raw_contrast_interp = make_interp_spline(sep, raw_contrast, k=3)
+
         logger.info(f"Created {yip_path.stem}")
 
     def create_psf_datacube(self, batch_size=128):
@@ -206,3 +243,157 @@ class Coronagraph:
         if self.has_psf_datacube:
             base_str += f"\n{base_str}\nPSF datacube loaded"
         return base_str
+
+    def get_throughput_curve(self, aperture_radius_lod=0.7, oversample=4, plot=True):
+        """Creates the coronagraph throughput curve.
+
+        Compute the coronagraph throughput vs. separation using ONLY the
+        provided planet off-axis PSFs (no interpolation).
+        We define throughput as the fraction of the total flux
+        (planet PSF normalized to 1) that lands inside a photometric aperture.
+        """
+        separations = []
+        throughputs = []
+
+        # Loop through all provided offsets
+        for i, x_lod_val in enumerate(np.array(self.offax.x_offsets)):
+            for j, y_lod_val in enumerate(np.array(self.offax.y_offsets)):
+                psf_img = self.offax.reshaped_psfs[i, j]
+                r = np.sqrt(x_lod_val**2 + y_lod_val**2)
+
+                # Aperture radius in pixel units
+                radius_pix = aperture_radius_lod / self.pixel_scale.value
+
+                # Planet coords in pixel space
+                px = convert_to_pix(
+                    x_lod_val, self.offax.center_x, self.pixel_scale
+                ).value.astype(int)
+                py = convert_to_pix(
+                    y_lod_val, self.offax.center_y, self.pixel_scale
+                ).value.astype(int)
+
+                # Extract & oversample
+                subarr_oversamp, px_os, py_os, radius_os, subarr_orig = (
+                    extract_and_oversample_subarray(
+                        psf_img, px, py, radius_pix, oversample
+                    )
+                )
+
+                # Measure flux in aperture
+                planet_flux_in_ap = measure_flux_in_oversampled_aperture(
+                    subarr_oversamp, px_os, py_os, radius_os, subarr_orig
+                )
+
+                # planet_flux_in_ap is the throughput if psf_img sums to 1
+                throughput = planet_flux_in_ap
+                separations.append(r)
+                throughputs.append(throughput)
+
+        # Sort by separation
+        separations = np.array(separations)
+        throughputs = np.array(throughputs)
+        idx_sort = np.argsort(separations)
+        separations = separations[idx_sort]
+        throughputs = throughputs[idx_sort]
+
+        if plot:
+            import matplotlib.pyplot as plt
+
+            plt.figure()
+            plt.plot(separations, throughputs, "o-", ms=6)
+            plt.xlabel("Separation [λ/D]")
+            plt.ylabel("Throughput")
+            plt.title(f"{self.name} Throughput")
+            plt.grid(True)
+            plt.show()
+
+        return separations, throughputs
+
+    def get_contrast_curve(
+        self, stellar_diam=0 * lod, aperture_radius_lod=0.7, oversample=4, plot=True
+    ):
+        """Creates the raw contrast curve.
+
+        Compute a photometric aperture–based contrast curve vs. separation,
+        using the provided offsets.
+
+        Args:
+            stellar_diam (Quantity):
+                The stellar diameter used for the star's PSF.
+            aperture_radius_lod (float):
+                The aperture radius in lambda/D.
+            oversample (int):
+                The oversampling factor for interpolation.
+            plot (bool):
+                Whether to plot the contrast curve.
+        """
+        # Grab star PSF for given stellar diameter
+        star_psf = self.stellar_intens(stellar_diam)
+
+        separations = []
+        contrasts = []
+
+        for i, x_lod_val in enumerate(np.array(self.offax.x_offsets)):
+            for j, y_lod_val in enumerate(np.array(self.offax.y_offsets)):
+                # Planet PSF & separation
+                planet_psf = self.offax.reshaped_psfs[i, j]
+                r = np.sqrt(x_lod_val**2 + y_lod_val**2)
+
+                # Aperture radius in pixel units
+                radius_pix = aperture_radius_lod / self.pixel_scale.value
+
+                # Planet flux in aperture
+                px = convert_to_pix(
+                    x_lod_val, self.offax.center_x, self.pixel_scale
+                ).value.astype(int)
+                py = convert_to_pix(
+                    y_lod_val, self.offax.center_y, self.pixel_scale
+                ).value.astype(int)
+                subarr_oversamp_p, px_os, py_os, radius_os, subarr_orig_p = (
+                    extract_and_oversample_subarray(
+                        planet_psf, px, py, radius_pix, oversample
+                    )
+                )
+                planet_flux_in_ap = measure_flux_in_oversampled_aperture(
+                    subarr_oversamp_p, px_os, py_os, radius_os, subarr_orig_p
+                )
+
+                # Star flux in aperture at same offset
+                subarr_oversamp_s, sx_os, sy_os, radius_os_s, subarr_orig_s = (
+                    extract_and_oversample_subarray(
+                        star_psf, px, py, radius_pix, oversample
+                    )
+                )
+                star_flux_in_ap = measure_flux_in_oversampled_aperture(
+                    subarr_oversamp_s, sx_os, sy_os, radius_os_s, subarr_orig_s
+                )
+
+                # Contrast
+                if star_flux_in_ap > 0:
+                    contrast_val = star_flux_in_ap / planet_flux_in_ap
+                else:
+                    contrast_val = np.nan
+
+                separations.append(r)
+                contrasts.append(contrast_val)
+
+        # Sort by separation
+        separations = np.array(separations)
+        contrasts = np.array(contrasts)
+        idx_sort = np.argsort(separations)
+        separations = separations[idx_sort]
+        contrasts = contrasts[idx_sort]
+
+        if plot:
+            import matplotlib.pyplot as plt
+
+            plt.figure()
+            plt.plot(separations, contrasts, "o-")
+            plt.xlabel("Separation [λ/D]")
+            plt.ylabel("Raw Contrast")
+            plt.title(f"{self.name} Raw Contrast")
+            plt.yscale("log")
+            plt.grid(True)
+            plt.show()
+
+        return separations, contrasts
