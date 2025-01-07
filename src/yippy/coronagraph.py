@@ -372,7 +372,7 @@ class Coronagraph:
                 if star_flux_in_ap > 0:
                     contrast_val = star_flux_in_ap / planet_flux_in_ap
                 else:
-                    contrast_val = np.nan
+                    contrast_val = 0
 
                 separations.append(r)
                 contrasts.append(contrast_val)
