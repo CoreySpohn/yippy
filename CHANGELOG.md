@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.1](https://github.com/CoreySpohn/yippy/compare/v1.8.0...v1.8.1) (2025-01-07)
+
+
+### Bug Fixes
+
+* Default to 0 values instead of nan values to avoid erroring out ([d126379](https://github.com/CoreySpohn/yippy/commit/d126379fc34bd291d81de5f7f87c7b5465338d11))
+
 ## [1.8.0](https://github.com/CoreySpohn/yippy/compare/v1.7.2...v1.8.0) (2025-01-06)
 
 
