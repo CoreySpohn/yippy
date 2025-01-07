@@ -157,29 +157,32 @@ class Coronagraph:
         self.npixels = self.psf_shape[0]
 
         # Get the contrast and throughput
-        perf_path = Path(self.yip_path, performance_file)
-        if perf_path.exists():
-            sep, throughput, raw_contrast = load_coro_performance_from_fits(
-                performance_file, self.yip_path
-            )
+        if self.offax.type == "1d":
+            perf_path = Path(self.yip_path, performance_file)
+            if perf_path.exists():
+                sep, throughput, raw_contrast = load_coro_performance_from_fits(
+                    performance_file, self.yip_path
+                )
+            else:
+                logger.info("No precomputed performance file found. Computing now...")
+                sep_throughput, throughput = self.get_throughput_curve(plot=False)
+                sep_contrast, raw_contrast = self.get_contrast_curve(plot=False)
+
+                assert np.all(
+                    sep_throughput == sep_contrast
+                ), "Mismatch in separations for performance parameters"
+                sep = sep_throughput
+
+                # Save to fits
+                save_coro_performance_to_fits(
+                    sep, throughput, raw_contrast, performance_file, self.yip_path
+                )
+
+            # Create splines
+            self.throughput_interp = make_interp_spline(sep, throughput, k=3)
+            self.raw_contrast_interp = make_interp_spline(sep, raw_contrast, k=3)
         else:
-            logger.info("No precomputed performance file found. Computing now...")
-            sep_throughput, throughput = self.get_throughput_curve(plot=False)
-            sep_contrast, raw_contrast = self.get_contrast_curve(plot=False)
-
-            assert np.all(
-                sep_throughput == sep_contrast
-            ), "Mismatch in separations for performance parameters"
-            sep = sep_throughput
-
-            # Save to fits
-            save_coro_performance_to_fits(
-                sep, throughput, raw_contrast, performance_file, self.yip_path
-            )
-
-        # Create splines
-        self.throughput_interp = make_interp_spline(sep, throughput, k=3)
-        self.raw_contrast_interp = make_interp_spline(sep, raw_contrast, k=3)
+            logger.warning("2d contrast/throughput not supported currently")
 
         logger.info(f"Created {yip_path.stem}")
 
@@ -244,7 +247,7 @@ class Coronagraph:
             base_str += f"\n{base_str}\nPSF datacube loaded"
         return base_str
 
-    def get_throughput_curve(self, aperture_radius_lod=0.7, oversample=4, plot=True):
+    def get_throughput_curve(self, aperture_radius_lod=0.7, oversample=2, plot=True):
         """Creates the coronagraph throughput curve.
 
         Compute the coronagraph throughput vs. separation using ONLY the
@@ -310,7 +313,7 @@ class Coronagraph:
         return separations, throughputs
 
     def get_contrast_curve(
-        self, stellar_diam=0 * lod, aperture_radius_lod=0.7, oversample=4, plot=True
+        self, stellar_diam=0 * lod, aperture_radius_lod=0.7, oversample=2, plot=True
     ):
         """Creates the raw contrast curve.
 
