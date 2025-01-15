@@ -49,7 +49,7 @@ class Coronagraph:
         performance_file: str = "coro_perf.fits",
         x_symmetric: bool = True,
         y_symmetric: bool = False,
-        cpu_cores: int = 1,
+        cpu_cores: int = 4,
         platform: str = "cpu",
     ):
         """Initialize the Coronagraph object.
@@ -202,7 +202,6 @@ class Coronagraph:
         if datacube_path.exists():
             logger.info(f"Loading PSF datacube from {datacube_path}.")
             psfs = jnp.load(datacube_path)
-            self.has_psf_datacube = True
         else:
             # Create data cube of spatially dependent PSFs.
             psfs_shape = (*self.psf_shape, *self.psf_shape)
@@ -237,6 +236,7 @@ class Coronagraph:
             jnp.save(datacube_path, psfs)
             logger.info(f"PSF datacube saved to {datacube_path}.")
 
+        self.has_psf_datacube = True
         self.psf_datacube = psfs
 
     def __repr__(self):

@@ -195,7 +195,7 @@ class OffJAX(OffAx):
 
         # Set up the device mesh for shard_map
         mesh = Mesh(
-            mesh_utils.create_device_mesh(D),
+            mesh_utils.create_device_mesh([D]),
             axis_names=("i",),
         )
 
