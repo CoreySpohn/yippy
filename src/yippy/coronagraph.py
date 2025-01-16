@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 from lod_unit import lod
 from scipy.interpolate import make_interp_spline
+from scipy.optimize import root_scalar
 from tqdm import tqdm
 
 from .header import HeaderData
@@ -181,6 +182,20 @@ class Coronagraph:
             # Create splines
             self.throughput_interp = make_interp_spline(sep, throughput, k=3)
             self.raw_contrast_interp = make_interp_spline(sep, raw_contrast, k=3)
+
+            # Compute the Inner Working Angle
+            half_max_throughput = max(throughput) / 2
+            closest_ind = np.searchsorted(throughput, half_max_throughput)
+
+            def iwa_func(x):
+                return self.throughput_interp(x) - half_max_throughput
+
+            self.IWA = (
+                root_scalar(
+                    iwa_func, bracket=[sep[closest_ind - 1], sep[closest_ind]]
+                ).root
+                * lod
+            )
         else:
             logger.warning("2d contrast/throughput not supported currently")
 
