@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.9.0](https://github.com/CoreySpohn/yippy/compare/v1.8.1...v1.9.0) (2025-01-16)
+
+
+### Features
+
+* Add calculation of IWA ([461e392](https://github.com/CoreySpohn/yippy/commit/461e3925540f886a1f414bdf16a446a63160b449))
+
+
+### Bug Fixes
+
+* Now passes a list of integers into the JAX create_device_mesh function to keep up with a change ([59a39f5](https://github.com/CoreySpohn/yippy/commit/59a39f5fd7737f4012711d383877644a2c8b9cf7))
+
 ## [1.8.1](https://github.com/CoreySpohn/yippy/compare/v1.8.0...v1.8.1) (2025-01-07)
 
 
