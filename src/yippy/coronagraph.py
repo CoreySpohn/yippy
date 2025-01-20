@@ -169,9 +169,9 @@ class Coronagraph:
                 sep_throughput, throughput = self.get_throughput_curve(plot=False)
                 sep_contrast, raw_contrast = self.get_contrast_curve(plot=False)
 
-                assert np.all(
-                    sep_throughput == sep_contrast
-                ), "Mismatch in separations for performance parameters"
+                assert np.all(sep_throughput == sep_contrast), (
+                    "Mismatch in separations for performance parameters"
+                )
                 sep = sep_throughput
 
                 # Save to fits
