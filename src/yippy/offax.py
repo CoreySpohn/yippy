@@ -86,9 +86,9 @@ class OffAx:
                 # This condition occurs when the offsets is transposed
                 # from the expected format
                 offsets = offsets.T
-        assert (
-            len(offsets) == psfs.shape[0]
-        ), "Offsets and PSFs do not have the same number of elements"
+        assert len(offsets) == psfs.shape[0], (
+            "Offsets and PSFs do not have the same number of elements"
+        )
 
         ########################################################################
         # Determine the format of the input coronagraph files so we can handle #
