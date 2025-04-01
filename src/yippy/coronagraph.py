@@ -184,8 +184,10 @@ class Coronagraph:
             self.raw_contrast_interp = make_interp_spline(sep, raw_contrast, k=3)
 
             # Compute the Inner Working Angle
-            half_max_throughput = max(throughput) / 2
-            closest_ind = np.searchsorted(throughput, half_max_throughput)
+            # Exclude 0 values for when the PSF is not in the image
+            _valid_inds = throughput != 0
+            half_max_throughput = max(throughput[_valid_inds]) / 2
+            closest_ind = np.searchsorted(throughput[_valid_inds], half_max_throughput)
 
             def iwa_func(x):
                 return self.throughput_interp(x) - half_max_throughput
