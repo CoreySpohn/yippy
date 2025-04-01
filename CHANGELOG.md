@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.2](https://github.com/CoreySpohn/yippy/compare/v1.9.1...v1.9.2) (2025-04-01)
+
+
+### Bug Fixes
+
+* Add version info to the coronagraph performance file for future proofing ([c39b40b](https://github.com/CoreySpohn/yippy/commit/c39b40bbebdded4c165f1f879b85c014518ca14c))
+
 ## [1.9.1](https://github.com/CoreySpohn/yippy/compare/v1.9.0...v1.9.1) (2025-04-01)
 
 
