@@ -11,6 +11,7 @@ from scipy.interpolate import make_interp_spline
 from scipy.optimize import root_scalar
 from tqdm import tqdm
 
+from ._version import __version__
 from .header import HeaderData
 from .jax_funcs import enable_x64, set_host_device_count, set_platform
 from .logger import logger
@@ -157,6 +158,9 @@ class Coronagraph:
         assert self.psf_shape[0] == self.psf_shape[1], "PSF must be square"
         self.npixels = self.psf_shape[0]
 
+        # Append the version number to the performance file name
+        performance_file = f"{performance_file}_v{__version__}.fits"
+
         # Get the contrast and throughput
         if self.offax.type == "1d":
             perf_path = Path(self.yip_path, performance_file)
@@ -165,6 +169,16 @@ class Coronagraph:
                     performance_file, self.yip_path
                 )
             else:
+                # Check if there are any existing performance files that are not
+                # the current version
+                existing_files = list(self.yip_path.glob("coro_perf*.fits"))
+                old_files = [
+                    f for f in existing_files if not f.stem.endswith(f"v{__version__}")
+                ]
+                # Delete old performance files to not pollute the directory
+                for f in old_files:
+                    f.unlink()
+
                 logger.info("No precomputed performance file found. Computing now...")
                 sep_throughput, throughput = self.get_throughput_curve(plot=False)
                 sep_contrast, raw_contrast = self.get_contrast_curve(plot=False)
