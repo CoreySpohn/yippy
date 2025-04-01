@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.9.1](https://github.com/CoreySpohn/yippy/compare/v1.9.0...v1.9.1) (2025-04-01)
+
+
+### Bug Fixes
+
+* Exclude 0 values from the IWA indexing ([a45177c](https://github.com/CoreySpohn/yippy/commit/a45177c201307fdb5d90491785dd04c7bd14eda8))
+* Exclude 0 values from the IWA indexing ([4020d98](https://github.com/CoreySpohn/yippy/commit/4020d98e95b4756b1251e2ea016f16f87d3f8860))
+
 ## [1.9.0](https://github.com/CoreySpohn/yippy/compare/v1.8.1...v1.9.0) (2025-01-16)
 
 
