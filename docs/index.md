@@ -11,7 +11,9 @@ examples/RadiallySymmetric.ipynb
 examples/QuarterSymmetric.ipynb
 examples/StellarIntens.ipynb
 examples/SkyTrans.ipynb
+examples/FourierInterpolation.ipynb
 ```
+
 ```{toctree}
 :maxdepth: 1
 develop/_changelog.md
