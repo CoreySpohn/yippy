@@ -5,6 +5,7 @@ from pathlib import Path
 
 import astropy.io.fits as pyfits
 import astropy.units as u
+import lod_unit  # noqa: F401
 import numpy as np
 from astropy.units import Quantity
 from numpy.typing import NDArray
