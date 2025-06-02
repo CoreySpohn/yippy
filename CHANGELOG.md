@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.0](https://github.com/CoreySpohn/yippy/compare/v1.9.2...v1.10.0) (2025-06-02)
+
+
+### Features
+
+* Add information on the maximum separation in the image for 1d case ([f16b56e](https://github.com/CoreySpohn/yippy/commit/f16b56e1d82a669ecb7f8afb84fcbc72f59cce56))
+
 ## [1.9.2](https://github.com/CoreySpohn/yippy/compare/v1.9.1...v1.9.2) (2025-04-01)
 
 
