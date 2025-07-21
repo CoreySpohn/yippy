@@ -206,7 +206,7 @@ class OffJAX(OffAx):
             mesh=mesh,
             in_specs=P("i"),
             out_specs=P("i"),
-            check_vma=False,
+            check_rep=False,
         )(x_vals_padded, y_vals_padded)
 
         # Truncate the padded results if we added any padding
