@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.10.1](https://github.com/CoreySpohn/yippy/compare/v1.10.0...v1.10.1) (2025-07-21)
+
+
+### Bug Fixes
+
+* testing shard_map fix ([6d71df8](https://github.com/CoreySpohn/yippy/commit/6d71df89d3c25fc06e5d660f17ae078d02e7b525))
+
 ## [1.10.0](https://github.com/CoreySpohn/yippy/compare/v1.9.2...v1.10.0) (2025-06-02)
 
 
