@@ -1,5 +1,6 @@
 """Base coronagraph class."""
 
+import json
 from pathlib import Path
 
 import astropy.io.fits as pyfits
@@ -12,7 +13,11 @@ from scipy.optimize import root_scalar
 from tqdm import tqdm
 
 from .header import HeaderData
-from .jax_funcs import enable_x64, set_host_device_count, set_platform
+from .jax_funcs import (
+    enable_x64,
+    set_host_device_count,
+    set_platform,
+)
 from .logger import logger
 from .offax import OffAx
 from .offjax import OffJAX
@@ -263,6 +268,9 @@ class Coronagraph:
         if hasattr(self, "IWA"):
             base_str += f"\nInner Working Angle: {self.IWA:.2f}"
 
+        if hasattr(self, "OWA"):
+            base_str += f"\nOuter Working Angle: {self.OWA:.2f}"
+
         if self.has_psf_datacube:
             base_str += "\nPSF datacube loaded"
 
@@ -497,8 +505,11 @@ class Coronagraph:
         self.core_intensity_dict = core_intensities
 
         # Compute Inner Working Angle
-        half_max_throughput = max(throughput) / 2
-        closest_ind = np.searchsorted(throughput, half_max_throughput)
+        valid_mask = throughput > 0
+        half_max_throughput = max(throughput[valid_mask]) / 2
+        _closest_ind = np.searchsorted(throughput[valid_mask], half_max_throughput)
+        # Map that to the full throughput array
+        closest_ind = np.where(throughput == throughput[valid_mask][_closest_ind])[0]
 
         def iwa_func(x):
             return self.throughput_interp(x) - half_max_throughput
@@ -507,6 +518,19 @@ class Coronagraph:
             root_scalar(iwa_func, bracket=[sep[closest_ind - 1], sep[closest_ind]]).root
             * lod
         )
+
+        # Compute OWA using max_offset_in_image as the physical limit
+        if hasattr(self.offax, "max_offset_in_image"):
+            self.OWA = self.offax.max_offset_in_image
+            logger.info(
+                f"OWA set to max_offset_in_image: {self.OWA.to(u.lod).value:.2f} λ/D"
+            )
+        else:
+            # Fallback to maximum separation if max_offset_in_image not available
+            self.OWA = np.max(sep) * lod
+            logger.warning(
+                "max_offset_in_image not available, using maximum separation as OWA"
+            )
 
         # Plot if requested
         if plot:
@@ -551,6 +575,7 @@ class Coronagraph:
             "separations_core_intensity": sep_core_intensity,
             "core_intensities": core_intensities,
             "IWA": self.IWA,
+            "OWA": self.OWA,
         }
 
     def _compute_performance_metrics(
@@ -613,12 +638,25 @@ class Coronagraph:
         contrasts = []
         core_areas = []
 
-        # Loop through all provided offsets - just once!
+        # Loop through all provided offsets
         for i, x_lod_val in enumerate(np.array(self.offax.x_offsets)):
             for j, y_lod_val in enumerate(np.array(self.offax.y_offsets)):
-                # Get planet PSF and calculate radial separation
-                planet_psf = self.offax.reshaped_psfs[i, j]
+                # Calculate radial separation
                 r = np.sqrt(x_lod_val**2 + y_lod_val**2)
+
+                # Skip separations that exceed the maximum offset where PSF is
+                # within image
+                if hasattr(self.offax, "max_offset_in_image"):
+                    max_sep = self.offax.max_offset_in_image.to(u.lod).value
+                    if r > max_sep:
+                        logger.debug(
+                            f"Skipping separation {r:.2f} λ/D "
+                            f"(exceeds max_offset_in_image {max_sep:.2f} λ/D)"
+                        )
+                        continue
+
+                # Get planet PSF
+                planet_psf = self.offax.reshaped_psfs[i, j]
 
                 # Pixel coordinates are needed for all computations
                 px = convert_to_pix(
@@ -1217,3 +1255,368 @@ class Coronagraph:
             )
 
         return separations, core_areas
+
+    def _save_to_exosims_format(
+        self,
+        sep,
+        throughput,
+        raw_contrast,
+        core_area,
+        sep_occ_trans,
+        occ_trans,
+        sep_core_intensity,
+        core_intensities,
+        aperture_radius_lod,
+        fit_gaussian_for_core_area,
+        use_phot_aperture_as_min,
+        units,
+    ):
+        """Save performance curves in EXOSIMS format.
+
+        Args:
+            sep (numpy.ndarray):
+                Separations in lambda/D for throughput/contrast/core_area
+            throughput (numpy.ndarray):
+                Throughput values at each separation
+            raw_contrast (numpy.ndarray):
+                Raw contrast values at each separation
+            core_area (numpy.ndarray):
+                Core areas at each separation in (lambda/D)^2
+            sep_occ_trans (numpy.ndarray):
+                Separations in lambda/D for occulter transmission
+            occ_trans (numpy.ndarray):
+                Occulter transmission values at each separation
+            sep_core_intensity (numpy.ndarray):
+                Separations in lambda/D for core mean intensity
+            core_intensities (dict):
+                Dictionary mapping stellar diameter values to arrays of core mean
+                intensity values at each separation
+            aperture_radius_lod (float):
+                Aperture radius in lambda/D for throughput and contrast calculations
+            fit_gaussian_for_core_area (bool):
+                Whether Gaussian fitting was used for core area calculation
+            use_phot_aperture_as_min (bool):
+                Whether aperture_radius_lod was used as minimum area if fitting Gaussian
+            units (str):
+                Units for the EXOSIMS files
+        """
+        # Create EXOSIMS subdirectory if it doesn't exist
+        exosims_dir = Path(self.yip_path, "exosims")
+        exosims_dir.mkdir(exist_ok=True)
+
+        # Create base header from coronagraph parameters
+        base_header = pyfits.Header()
+        base_header["PIXSCALE"] = (self.pixel_scale.value, "Angular pixel scale")
+        base_header["LAMBDA"] = (self.header.lambda0.value, "Wavelength in micrometers")
+        base_header["D"] = (self.header.diameter.value, "Telescope diameter in meters")
+        base_header["OBSCURED"] = (self.header.obscured, "Obscuration fraction")
+        if self.header.maxlam is not None and self.header.minlam is not None:
+            base_header["DELTALAM"] = (
+                (self.header.maxlam - self.header.minlam).value,
+                "Bandpass width in micrometers",
+            )
+        base_header["UNITS"] = (units, "Angular units")
+
+        # 1. Save occulter transmission (occ_trans.fits format)
+        occ_trans_header = base_header.copy()
+        occ_trans_data = np.vstack((sep_occ_trans, occ_trans)).transpose()
+        hdul = pyfits.HDUList(
+            [pyfits.PrimaryHDU(occ_trans_data, header=occ_trans_header)]
+        )
+        occ_trans_file = exosims_dir / "occ_trans.fits"
+        hdul.writeto(occ_trans_file, overwrite=True)
+
+        # 2. Save core throughput (core_thruput.fits format)
+        core_thruput_header = base_header.copy()
+        if fit_gaussian_for_core_area:
+            core_thruput_header["PHOTAPER"] = "Gaussian"
+            if use_phot_aperture_as_min:
+                core_thruput_header["MINAPER"] = aperture_radius_lod
+            else:
+                core_thruput_header["MINAPER"] = 0
+        else:
+            core_thruput_header["PHOTAPER"] = aperture_radius_lod
+
+        core_thruput_data = np.vstack((sep, throughput)).transpose()
+        hdul = pyfits.HDUList(
+            [pyfits.PrimaryHDU(core_thruput_data, header=core_thruput_header)]
+        )
+        core_thruput_file = exosims_dir / "core_thruput.fits"
+        hdul.writeto(core_thruput_file, overwrite=True)
+
+        # 3. Save core area (core_area.fits format) - only if Gaussian fitting was used
+        # For fixed aperture, this would be a scalar value like in
+        # process_opticalsys_package.py
+        if fit_gaussian_for_core_area:
+            core_area_header = core_thruput_header.copy()  # Same header as throughput
+            core_area_data = np.vstack((sep, core_area)).transpose()
+            hdul = pyfits.HDUList(
+                [pyfits.PrimaryHDU(core_area_data, header=core_area_header)]
+            )
+            core_area_file = exosims_dir / "core_area.fits"
+            hdul.writeto(core_area_file, overwrite=True)
+        else:
+            # For fixed aperture, the core area is just the scalar value
+            logger.info(
+                f"Fixed aperture core area: {aperture_radius_lod**2 * np.pi:.6f} (λ/D)²"
+            )
+
+        # 4. Save core mean intensity (core_mean_intensity.fits format)
+        core_intensity_header = base_header.copy()
+
+        # Add stellar diameter information to header (DIAM000, DIAM001, etc.)
+        stellar_diams = list(core_intensities.keys())
+        for j, diam in enumerate(stellar_diams):
+            core_intensity_header[f"DIAM{j:03d}"] = (
+                diam.value,
+                f"Stellar diameter {j} in lambda/D",
+            )
+
+        # Stack all intensity profiles with separations as first row
+        # Format: first row is separations, subsequent rows are intensities for each
+        # diameter
+        intensity_array = np.zeros((len(stellar_diams), len(sep_core_intensity)))
+        for j, diam in enumerate(stellar_diams):
+            intensity_array[j] = core_intensities[diam]
+
+        # Stack separations and intensities:
+        # [separations, intens_diam0, intens_diam1, ...]
+        core_intensity_data = np.vstack(
+            (sep_core_intensity, intensity_array)
+        ).transpose()
+
+        hdul = pyfits.HDUList(
+            [pyfits.PrimaryHDU(core_intensity_data, header=core_intensity_header)]
+        )
+        core_intensity_file = exosims_dir / "core_mean_intensity.fits"
+        hdul.writeto(core_intensity_file, overwrite=True)
+
+        # 5. Save raw contrast for completeness (not part of original EXOSIMS format
+        # but useful for analysis)
+        contrast_header = core_thruput_header.copy()  # Same parameters as throughput
+        contrast_data = np.vstack((sep, raw_contrast)).transpose()
+        hdul = pyfits.HDUList(
+            [pyfits.PrimaryHDU(contrast_data, header=contrast_header)]
+        )
+        contrast_file = exosims_dir / "raw_contrast.fits"
+        hdul.writeto(contrast_file, overwrite=True)
+
+        logger.info(f"EXOSIMS format files saved to {exosims_dir}/")
+        logger.info("Files created:")
+        logger.info("  - occ_trans.fits (occulter transmission)")
+        logger.info("  - core_thruput.fits (throughput)")
+        if fit_gaussian_for_core_area:
+            logger.info("  - core_area.fits (core area from Gaussian fits)")
+        logger.info("  - core_mean_intensity.fits (stellar intensity)")
+        logger.info("  - raw_contrast.fits (raw contrast)")
+        logger.info("  - specs.json (EXOSIMS specification file)")
+
+    def to_exosims(
+        self,
+        aperture_radius_lod=0.7,
+        fit_gaussian_for_core_area=False,
+        use_phot_aperture_as_min=False,
+        units="LAMBDA/D",
+    ):
+        """Save performance curves in EXOSIMS format.
+
+        This method saves the coronagraph's performance curves (throughput, contrast,
+        occulter transmission, core area, and core mean intensity) to individual FITS
+        files in the same format as used by process_opticalsys_package.py for use
+        with EXOSIMS.
+
+        Args:
+            aperture_radius_lod (float):
+                Aperture radius in lambda/D used for throughput and contrast
+                calculations. Default is 0.7.
+            fit_gaussian_for_core_area (bool):
+                Whether Gaussian fitting was used for core area calculation.
+                Default is False (fixed aperture).
+            use_phot_aperture_as_min (bool):
+                Whether aperture_radius_lod was used as minimum area if fitting
+                Gaussian. Default is False.
+            units (str):
+                Units for the angular separations in EXOSIMS files.
+                Default is "LAMBDA/D".
+
+        Raises:
+            ValueError:
+                If performance curves have not been computed yet.
+        """
+        # Check that performance curves have been computed
+        required_attrs = [
+            "throughput_interp",
+            "raw_contrast_interp",
+            "occ_trans_interp",
+            "core_area_interp",
+            "core_intensity_interp",
+        ]
+
+        missing_attrs = [attr for attr in required_attrs if not hasattr(self, attr)]
+        if missing_attrs:
+            raise ValueError(
+                f"Performance curves not computed yet. Missing: {missing_attrs}. "
+                "Call compute_all_performance_curves() first."
+            )
+
+        # Get the separations from the off-axis PSF data
+        separations = []
+        for i, x_lod_val in enumerate(np.array(self.offax.x_offsets)):
+            for j, y_lod_val in enumerate(np.array(self.offax.y_offsets)):
+                r = np.sqrt(x_lod_val**2 + y_lod_val**2)
+
+                # Skip separations that exceed the maximum offset where PSF is
+                # within image
+                if hasattr(self.offax, "max_offset_in_image"):
+                    max_sep = self.offax.max_offset_in_image.to(u.lod).value
+                    if r > max_sep:
+                        logger.debug(
+                            f"Skipping separation {r:.2f} λ/D "
+                            f"(exceeds max_offset_in_image {max_sep:.2f} λ/D)"
+                        )
+                        continue
+
+                separations.append(r)
+
+        separations = np.sort(np.unique(separations))
+
+        # Log filtering results
+        if hasattr(self.offax, "max_offset_in_image"):
+            max_sep = self.offax.max_offset_in_image.to(u.lod).value
+            logger.info(
+                f"Using {len(separations)} separations within max_offset_in_image "
+                f"({max_sep:.2f} λ/D)"
+            )
+            logger.info(
+                f"Separation range: {np.min(separations):.2f} - "
+                f"{np.max(separations):.2f} λ/D"
+            )
+        else:
+            logger.info(
+                f"Using all {len(separations)} separations "
+                "(no max_offset_in_image filtering)"
+            )
+
+        # Evaluate interpolators at these separations
+        throughput = self.throughput_interp(separations)
+        raw_contrast = self.raw_contrast_interp(separations)
+        core_area = self.core_area_interp(separations)
+
+        # Validate results to ensure no extrapolation artifacts
+        if np.any(throughput > 1):
+            raise ValueError(
+                f"Found {np.sum(throughput > 1)}"
+                f" throughput values > 1. Max value: {np.max(throughput):.3f}"
+            )
+        if np.any(throughput < 0):
+            raise ValueError(
+                f"Found {np.sum(throughput < 0)}"
+                f" negative throughput values. Min value: {np.min(throughput):.3f}"
+            )
+
+        # Get occulter transmission data
+        # Use the stored data from the SkyTrans object
+        sky_trans_data = self.sky_trans()
+        bin_centers, occ_trans = self._compute_radial_average(sky_trans_data)
+        sep_occ_trans = bin_centers * self.pixel_scale.value
+
+        # Get core mean intensity data
+        # Use the stored stellar intensity dict
+        if hasattr(self, "core_intensity_dict"):
+            core_intensities = self.core_intensity_dict
+        else:
+            # Fallback: compute it on the fly
+            _, core_intensities = self.core_mean_intensity_curve(plot=False)
+
+        # Get separations for core intensity (first diameter's data)
+        first_diam = list(core_intensities.keys())[0]
+        stellar_psf = self.stellar_intens(first_diam)
+        dims = stellar_psf.shape
+        nbins = int(np.floor(np.max(dims) / 2))
+        center = [self.stellar_intens.center_x, self.stellar_intens.center_y]
+
+        # Create distance array from center
+        y, x = np.indices(stellar_psf.shape)
+        r = np.sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2)
+        max_radius = np.max(r)
+        bins = np.linspace(0, max_radius, nbins + 1)
+        bin_centers = (bins[1:] + bins[:-1]) / 2
+        sep_core_intensity = bin_centers * self.pixel_scale.value
+
+        # Call the existing save method
+        self._save_to_exosims_format(
+            sep=separations,
+            throughput=throughput,
+            raw_contrast=raw_contrast,
+            core_area=core_area,
+            sep_occ_trans=sep_occ_trans,
+            occ_trans=occ_trans,
+            sep_core_intensity=sep_core_intensity,
+            core_intensities=core_intensities,
+            aperture_radius_lod=aperture_radius_lod,
+            fit_gaussian_for_core_area=fit_gaussian_for_core_area,
+            use_phot_aperture_as_min=use_phot_aperture_as_min,
+            units=units,
+        )
+
+        # Use the stored IWA and OWA values that were computed in
+        # compute_all_performance_curves
+        IWA = self.IWA
+        OWA = self.OWA
+
+        # Convert units if needed (to arcseconds if requested)
+        to_arcsec = units.lower() == "arcsec"
+        if to_arcsec:
+            # Convert lambda/D to arcseconds using the telescope diameter and wavelength
+            angunit = ((self.header.lambda0) / (self.header.diameter)).to(
+                u.arcsec, equivalencies=u.dimensionless_angles()
+            )
+            IWA_output = (IWA * angunit).to(u.arcsec).value
+            OWA_output = (OWA * angunit).to(u.arcsec).value
+        else:
+            IWA_output = IWA.to_value(u.lod)
+            OWA_output = OWA.to_value(u.lod)
+
+        # Determine core area filename/value
+        if fit_gaussian_for_core_area:
+            core_area_fname = "core_area.fits"
+        else:
+            # For fixed aperture, it's just the scalar value
+            core_area_fname = aperture_radius_lod**2 * np.pi
+
+        # Calculate deltaLam
+        if self.header.maxlam is not None and self.header.minlam is not None:
+            deltaLam = (self.header.maxlam - self.header.minlam).to(u.nm).value
+        else:
+            deltaLam = None
+
+        # Create the EXOSIMS specs dictionary in the same format as
+        # process_opticalsys_package.py
+        outdict = {
+            "pupilDiam": self.header.diameter.to(u.m).value,
+            "obscurFac": self.header.obscured,
+            "shapeFac": np.pi / 4,
+            "starlightSuppressionSystems": [
+                {
+                    "name": self.name,
+                    "lam": self.header.lambda0.to(u.nm).value,
+                    "deltaLam": deltaLam,
+                    "occ_trans": "occ_trans.fits",
+                    "core_thruput": "core_thruput.fits",
+                    "core_mean_intensity": "core_mean_intensity.fits",
+                    "core_area": core_area_fname,
+                    "IWA": IWA_output,
+                    "OWA": OWA_output,
+                    "input_angle_units": units,
+                }
+            ],
+        }
+
+        # Save the JSON specs file
+        exosims_dir = Path(self.yip_path, "exosims")
+        specs_file = exosims_dir / "specs.json"
+        with open(specs_file, "w") as f:
+            json.dump(outdict, f, indent=2)
+
+        logger.info(f"EXOSIMS specs saved to {specs_file}")
+        return outdict
