@@ -1,5 +1,53 @@
 # Changelog
 
+## [1.10.2](https://github.com/CoreySpohn/yippy/compare/v1.10.1...v1.10.2) (2025-07-21)
+
+
+### Bug Fixes
+
+* testing new shard_map fix ([30e851d](https://github.com/CoreySpohn/yippy/commit/30e851d13edfe926f2edd51c926e2b3d5b7ce28e))
+
+## [1.10.1](https://github.com/CoreySpohn/yippy/compare/v1.10.0...v1.10.1) (2025-07-21)
+
+
+### Bug Fixes
+
+* testing shard_map fix ([6d71df8](https://github.com/CoreySpohn/yippy/commit/6d71df89d3c25fc06e5d660f17ae078d02e7b525))
+
+## [1.10.0](https://github.com/CoreySpohn/yippy/compare/v1.9.2...v1.10.0) (2025-06-02)
+
+
+### Features
+
+* Add information on the maximum separation in the image for 1d case ([f16b56e](https://github.com/CoreySpohn/yippy/commit/f16b56e1d82a669ecb7f8afb84fcbc72f59cce56))
+
+## [1.9.2](https://github.com/CoreySpohn/yippy/compare/v1.9.1...v1.9.2) (2025-04-01)
+
+
+### Bug Fixes
+
+* Add version info to the coronagraph performance file for future proofing ([c39b40b](https://github.com/CoreySpohn/yippy/commit/c39b40bbebdded4c165f1f879b85c014518ca14c))
+
+## [1.9.1](https://github.com/CoreySpohn/yippy/compare/v1.9.0...v1.9.1) (2025-04-01)
+
+
+### Bug Fixes
+
+* Exclude 0 values from the IWA indexing ([a45177c](https://github.com/CoreySpohn/yippy/commit/a45177c201307fdb5d90491785dd04c7bd14eda8))
+* Exclude 0 values from the IWA indexing ([4020d98](https://github.com/CoreySpohn/yippy/commit/4020d98e95b4756b1251e2ea016f16f87d3f8860))
+
+## [1.9.0](https://github.com/CoreySpohn/yippy/compare/v1.8.1...v1.9.0) (2025-01-16)
+
+
+### Features
+
+* Add calculation of IWA ([461e392](https://github.com/CoreySpohn/yippy/commit/461e3925540f886a1f414bdf16a446a63160b449))
+
+
+### Bug Fixes
+
+* Now passes a list of integers into the JAX create_device_mesh function to keep up with a change ([59a39f5](https://github.com/CoreySpohn/yippy/commit/59a39f5fd7737f4012711d383877644a2c8b9cf7))
+
 ## [1.8.1](https://github.com/CoreySpohn/yippy/compare/v1.8.0...v1.8.1) (2025-01-07)
 
 

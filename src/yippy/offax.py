@@ -5,9 +5,9 @@ from pathlib import Path
 
 import astropy.io.fits as pyfits
 import astropy.units as u
+import lod_unit  # noqa: F401
 import numpy as np
 from astropy.units import Quantity
-from lod_unit import lod
 from numpy.typing import NDArray
 
 from yippy.util import convert_to_lod, create_shift_mask, fft_shift
@@ -86,9 +86,9 @@ class OffAx:
                 # This condition occurs when the offsets is transposed
                 # from the expected format
                 offsets = offsets.T
-        assert (
-            len(offsets) == psfs.shape[0]
-        ), "Offsets and PSFs do not have the same number of elements"
+        assert len(offsets) == psfs.shape[0], (
+            "Offsets and PSFs do not have the same number of elements"
+        )
 
         ########################################################################
         # Determine the format of the input coronagraph files so we can handle #
@@ -156,6 +156,11 @@ class OffAx:
         else:
             logger.info(f"{yip_dir.stem} response is full 2D")
             self.type = "2df"
+        if self.type == "1d":
+            # A lambda/D offset that represents the greatest separation where the PSF's
+            # center is within the image
+            self.max_offset_in_image = psfs.shape[1] / 2 * u.pix * self.pixel_scale
+
         if self.type == "1d":
             # A lambda/D offset that represents the greatest separation where the PSF's
             # center is within the image
@@ -349,12 +354,12 @@ class OffAx:
         """
         if isinstance(x, Quantity):
             # Convert the x and y positions to lambda/D if they are in pixels
-            if x.unit != lod:
+            if x.unit != u.lod:
                 x = convert_to_lod(x, self.center_x, self.pixel_scale, lam, D, dist)
             else:
                 x = x.value
         if isinstance(y, Quantity):
-            if y.unit != lod:
+            if y.unit != u.lod:
                 y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
             else:
                 y = y.value
@@ -409,11 +414,11 @@ class OffAx:
         """
         if isinstance(x, Quantity):
             # Convert the x and y positions to lambda/D if they are in pixels
-            if x.unit != lod:
+            if x.unit != u.lod:
                 x = convert_to_lod(x, self.center_x, self.pixel_scale, lam, D, dist)
             x = x.value
         if isinstance(y, Quantity):
-            if y.unit != lod:
+            if y.unit != u.lod:
                 y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
             y = y.value
 
