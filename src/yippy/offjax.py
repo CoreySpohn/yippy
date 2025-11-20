@@ -1,5 +1,6 @@
 """Module for handling off-axis PSFs using JAX."""
 
+from functools import partial
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -9,21 +10,9 @@ from jax.experimental import mesh_utils
 from jax.experimental.shard_map import shard_map
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
+from lod_unit import lod
 
-from .jax_funcs import (
-    basic_shift_val,
-    convert_xy_1D,
-    convert_xy_2DQ,
-    create_avg_psf_1D,
-    create_avg_psf_2DQ,
-    create_shift_mask,
-    get_pad_info,
-    sym_shift_val,
-    x_basic_shift,
-    x_symmetric_shift,
-    y_basic_shift,
-    y_symmetric_shift,
-)
+from .jax_funcs import synthesize_psf_separable
 from .offax import OffAx
 
 
@@ -70,97 +59,47 @@ class OffJAX(OffAx):
         # Convert the PSF data to JAX arrays
         ##############
         self.reshaped_psfs = device_put(jnp.array(self.reshaped_psfs))
-        n_pixels_orig, n_pad, img_edge, n_pixels_final = get_pad_info(
-            self.reshaped_psfs[0, 0], 1.5
-        )
 
         self.x_offsets = device_put(jnp.array(self.x_offsets))
         self.y_offsets = device_put(jnp.array(self.y_offsets))
-        # Precompute and store coordinate grids based on PSF shape
-        height, width = (self.reshaped_psfs.shape[2], self.reshaped_psfs.shape[3])
-        # height, width = (self.padded_psfs.shape[2], self.padded_psfs.shape[3])
+        n_pixels = self.reshaped_psfs.shape[-1]
+        n_pad = int(1.5 * n_pixels)
+        n_fft = n_pixels + 2 * n_pad
+        n_pad = int(1.5 * n_pixels)
+        if (n_pixels + 2 * n_pad) % 2 != 0:
+            n_pad += 1
 
-        self.x_grid, self.y_grid = jnp.meshgrid(
-            jnp.arange(width), jnp.arange(height), indexing="xy"
+        n_fft = n_pixels + 2 * n_pad  # Guaranteed even
+
+        # Create 1D Frequency Vectors
+        # kx: Real-to-Complex frequencies (0 to 0.5)
+        self.kx = device_put(jnp.fft.rfftfreq(n_fft))
+        # ky: Standard frequencies (0 to 0.5, -0.5 to -1/N)
+        self.ky = device_put(jnp.fft.fftfreq(n_fft))
+
+        # Calculate max_offset for bounds check
+        max_offset = -1.0
+        if self.type == "1d" and hasattr(self, "max_offset_in_image"):
+            max_offset = self.max_offset_in_image.to(lod).value
+
+        # Bind the function
+        self.create_psf = partial(
+            synthesize_psf_separable,
+            pixel_scale=self.pixel_scale.value,
+            reshaped_psfs=self.reshaped_psfs,
+            x_offsets=self.x_offsets,
+            y_offsets=self.y_offsets,
+            kx=self.kx,
+            ky=self.ky,
+            n_pad=n_pad,
+            x_symmetric=self.x_symmetric,
+            y_symmetric=self.y_symmetric,
+            input_type=self.type,
+            max_offset=max_offset,
         )
-        self.x_grid = device_put(self.x_grid)
-        self.y_grid = device_put(self.y_grid)
 
-        # Create the frequency grids
-        ky = jnp.fft.fftfreq(n_pixels_final)
-        kx = jnp.fft.fftfreq(n_pixels_final)
-
-        # Precomputed base exponentials
-        self.x_phasor = jnp.exp(-2j * jnp.pi * kx)
-        self.y_phasor = jnp.exp(-2j * jnp.pi * ky)
-
-        ##############
-        # Choose the transformations
-        ##############
-        if self.type == "1d":
-            create_avg_psf = create_avg_psf_1D
-            convert_xy = convert_xy_1D
-        elif self.type == "2dq":
-            create_avg_psf = create_avg_psf_2DQ
-            convert_xy = convert_xy_2DQ
-
-        if self.x_symmetric:
-            x_shift = x_symmetric_shift
-            x_shift_val = sym_shift_val
-        else:
-            x_shift = x_basic_shift
-            x_shift_val = basic_shift_val
-        if self.y_symmetric:
-            y_shift = y_symmetric_shift
-            y_shift_val = sym_shift_val
-        else:
-            y_shift = y_basic_shift
-            y_shift_val = basic_shift_val
-
-        ##############
-        # Create the JAX functions
-        ##############
-        def create_psf(x, y):
-            """Create an off-axis PSF at a given position.
-
-            This uses closures to pass in the reshaped PSFs, pixel scale, and
-            offsets which allows for JIT compilation that treats them as
-            constants.
-
-            Args:
-                x (float):
-                    x position in lambda/D.
-                y (float):
-                    y position in lambda/D.
-
-            Returns:
-                jnp.ndarray:
-                    The off-axis PSF at the given position.
-            """
-            avg_psf = create_avg_psf(
-                x,
-                y,
-                self.pixel_scale.value,
-                self.x_offsets,
-                self.y_offsets,
-                self.x_grid,
-                self.y_grid,
-                self.x_phasor,
-                self.y_phasor,
-                self.reshaped_psfs,
-            )
-            _x, _y = convert_xy(x, y)
-            psf = x_shift(x, _x, avg_psf, self.pixel_scale.value, self.x_phasor)
-            psf = y_shift(y, _y, psf, self.pixel_scale.value, self.y_phasor)
-            _x_shift = x_shift_val(x, _x, self.pixel_scale.value)
-            _y_shift = y_shift_val(y, _y, self.pixel_scale.value)
-            mask = create_shift_mask(
-                psf, _x_shift, _y_shift, self.x_grid, self.y_grid, 1
-            )
-            return psf * mask
-
-        self.create_psf = jit(create_psf)
-        self.create_psfs = jit(vmap(create_psf, in_axes=(0, 0)))
+        self.create_psfs = vmap(self.create_psf, in_axes=(0, 0))
+        self.create_psfs_j = jit(self.create_psfs)
 
     def create_psfs_parallel(self, x_vals, y_vals):
         """Create off-axis PSFs at multiple positions in parallel using shard_map.
@@ -202,7 +141,7 @@ class OffJAX(OffAx):
         # Distribute computation across devices. Each device gets N/D items.
         # in_specs=P('i') will shard the first dimension across the 'i' axis.
         psfs_padded = shard_map(
-            self.create_psfs,
+            self.create_psfs_j,
             mesh=mesh,
             in_specs=P("i"),
             out_specs=P("i"),

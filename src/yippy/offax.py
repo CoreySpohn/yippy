@@ -156,6 +156,10 @@ class OffAx:
         else:
             logger.info(f"{yip_dir.stem} response is full 2D")
             self.type = "2df"
+        if self.type == "1d":
+            # A lambda/D offset that represents the greatest separation where the PSF's
+            # center is within the image
+            self.max_offset_in_image = psfs.shape[1] / 2 * u.pix * self.pixel_scale
 
         if self.type == "1d":
             # A lambda/D offset that represents the greatest separation where the PSF's

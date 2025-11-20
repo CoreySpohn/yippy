@@ -58,12 +58,32 @@ class StellarIntens:
         # Load on-axis stellar intensity PSF data
         psfs = pyfits.getdata(Path(yip_dir, stellar_intens_file), 0)
 
+        # Get header information
+        header = pyfits.getheader(Path(yip_dir, stellar_intens_file), 0)
+
+        # Get center coordinates from header or use image center
+        if "XCENTER" in header:
+            self.center_x = header["XCENTER"]
+        else:
+            self.center_x = psfs[0].shape[1] / 2
+
+        if "YCENTER" in header:
+            self.center_y = header["YCENTER"]
+        else:
+            self.center_y = psfs[0].shape[0] / 2
+
         # Load the stellar angular diameters in units of lambda/D
-        diams = pyfits.getdata(Path(yip_dir, stellar_diam_file), 0) * lod
+        self.diams = pyfits.getdata(Path(yip_dir, stellar_diam_file), 0) * lod
+        # For interpolation purpose, replace 0s with smallest positive value
+        self.diams[self.diams == 0] = np.finfo(np.float32).eps * lod
+
+        # Store a copy of the original PSFs
+        self.psfs = psfs.copy()
 
         # Interpolate stellar data in logarithmic space to ensure non-negative
         # interpolated values
-        self.ln_interp = CubicSpline(diams, np.log(psfs))
+        self.psfs[self.psfs == 0] = np.finfo(np.float32).eps
+        self.ln_interp = CubicSpline(self.diams, np.log(self.psfs))
 
     def __call__(self, stellar_diam: Quantity, lam=None, D=None):
         """Returns the stellar intensity map at a specified stellar diameter.
