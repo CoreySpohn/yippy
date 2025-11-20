@@ -919,11 +919,64 @@ def synthesize_psf_separable(
 
     neighbors = reshaped_psfs[inds[:, 0], inds[:, 1]]
 
-    # Weights
-    dist_vecs = (jnp.array([_x, _y]) - offsets) / pixel_scale
-    dists_sq = jnp.sum(dist_vecs**2, axis=1)
-    weights = jnp.exp(-dists_sq / (2 * 0.25**2)) + 1e-16
-    weights = weights / jnp.sum(weights)
+    # We calculate weights based on the relative position of _x/_y
+    # within the bounding box of the neighbors found.
+    if input_type == "1d":
+        # Neighbors are: [x_low, 0], [x_high, 0]
+        x0 = offsets[0, 0]
+        x1 = offsets[1, 0]
+
+        # Span of the current grid cell
+        span_x = x1 - x0
+
+        # Avoid division by zero if query lands exactly on a node or grid is 1 point
+        span_x = jnp.where(span_x == 0, 1.0, span_x)
+
+        # Normalize distance (0.0 to 1.0)
+        u = (_x - x0) / span_x
+
+        # Linear weights: w0 = (1-u), w1 = u
+        # shape (2,)
+        weights = jnp.array([1.0 - u, u])
+
+        # Safety: If span was 0, force weight to [1, 0]
+        weights = jnp.where(x1 == x0, jnp.array([1.0, 0.0]), weights)
+
+    else:  # 2D Case
+        # Neighbors order from get_near_inds_offsets_2D is:
+        # 0: (x0, y0), 1: (x0, y1), 2: (x1, y0), 3: (x1, y1)
+        x0 = offsets[0, 0]
+        x1 = offsets[3, 0]  # dim 0 is x
+        y0 = offsets[0, 1]
+        y1 = offsets[3, 1]  # dim 1 is y
+
+        span_x = x1 - x0
+        span_y = y1 - y0
+
+        # Avoid div by zero
+        span_x = jnp.where(span_x == 0, 1.0, span_x)
+        span_y = jnp.where(span_y == 0, 1.0, span_y)
+
+        # Normalize coordinates (0.0 to 1.0)
+        u = (_x - x0) / span_x
+        v = (_y - y0) / span_y
+
+        # Bilinear Weights
+        # w00 = (1-u)(1-v)
+        # w01 = (1-u)v
+        # w10 = u(1-v)
+        # w11 = uv
+        w0 = (1.0 - u) * (1.0 - v)
+        w1 = (1.0 - u) * v
+        w2 = u * (1.0 - v)
+        w3 = u * v
+
+        weights = jnp.array([w0, w1, w2, w3])
+
+        # Safety for coincident nodes
+        weights = jnp.where(
+            (x1 == x0) & (y1 == y0), jnp.array([1.0, 0.0, 0.0, 0.0]), weights
+        )
 
     # Symmetry logic
     eff_offsets_x = offsets[:, 0]
