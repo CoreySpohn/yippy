@@ -74,13 +74,16 @@ class StellarIntens:
 
         # Load the stellar angular diameters in units of lambda/D
         self.diams = pyfits.getdata(Path(yip_dir, stellar_diam_file), 0) * lod
+        # For interpolation purpose, replace 0s with smallest positive value
+        self.diams[self.diams == 0] = np.finfo(np.float32).eps * lod
 
         # Store a copy of the original PSFs
-        self.psfs = psfs
+        self.psfs = psfs.copy()
 
         # Interpolate stellar data in logarithmic space to ensure non-negative
         # interpolated values
-        self.ln_interp = CubicSpline(self.diams, np.log(psfs))
+        self.psfs[self.psfs == 0] = np.finfo(np.float32).eps
+        self.ln_interp = CubicSpline(self.diams, np.log(self.psfs))
 
     def __call__(self, stellar_diam: Quantity, lam=None, D=None):
         """Returns the stellar intensity map at a specified stellar diameter.
