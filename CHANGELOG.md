@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.2](https://github.com/CoreySpohn/yippy/compare/v1.11.1...v1.11.2) (2025-11-20)
+
+
+### Bug Fixes
+
+* Revert incorrect merge ([7272fe1](https://github.com/CoreySpohn/yippy/commit/7272fe1fe0607e1f98bc627ae561ed5a6e3d91a0))
+
 ## [1.11.1](https://github.com/CoreySpohn/yippy/compare/v1.11.0...v1.11.1) (2025-11-20)
 
 
