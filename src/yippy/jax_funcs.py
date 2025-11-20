@@ -196,44 +196,13 @@ def fft_shift_y(image, shift_pixels, phasor):
     return jnp.maximum(image, 0.0)
 
 
-def handle_shift_x_positive(mask, shift_x, x_grid):
-    """Zero out the left side of the mask for positive x shifts."""
-    n = jnp.ceil(shift_x).astype(jnp.int32)
-    n = jnp.clip(n, 0, mask.shape[1])
-    # Set mask to 0 where x_grid < n
-    return jnp.where(x_grid < n, 0.0, mask)
-
-
-def handle_shift_x_negative(mask, shift_x, x_grid):
-    """Zero out the right side of the mask for negative x shifts."""
-    n = jnp.ceil(-shift_x).astype(jnp.int32)
-    n = jnp.clip(n, 0, mask.shape[1])
-    # Set mask to 0 where x_grid >= (width - n)
-    return jnp.where(x_grid >= (mask.shape[1] - n), 0.0, mask)
-
-
-def handle_shift_y_positive(mask, shift_y, y_grid):
-    """Zero out the top side of the mask for positive y shifts."""
-    n = jnp.ceil(shift_y).astype(jnp.int32)
-    n = jnp.clip(n, 0, mask.shape[0])
-    # Set mask to 0 where y_grid < n
-    return jnp.where(y_grid < n, 0.0, mask)
-
-
-def handle_shift_y_negative(mask, shift_y, y_grid):
-    """Zero out the bottom side of the mask for negative y shifts."""
-    n = jnp.ceil(-shift_y).astype(jnp.int32)
-    n = jnp.clip(n, 0, mask.shape[0])
-    # Set mask to 0 where y_grid >= (height - n)
-    return jnp.where(y_grid >= (mask.shape[0] - n), 0.0, mask)
-
-
 def create_shift_mask(psf, shift_x, shift_y, x_grid, y_grid, fill_val=1):
     """Create a mask to identify valid pixels to average.
 
     This function is useful because when the PSF is shifted there are empty
     pixels, since they were outside the initial image, and should not be
-    included in the final average.
+    included in the final average. This version avoids lax.cond for better
+    performance under JIT.
 
     Args:
         psf (jax.numpy.ndarray):
@@ -253,27 +222,30 @@ def create_shift_mask(psf, shift_x, shift_y, x_grid, y_grid, fill_val=1):
         jax.numpy.ndarray:
             The mask to identify valid pixels to average.
     """
-    mask = jnp.full_like(psf, fill_val)
+    height, width = psf.shape
 
-    mask = lax.cond(
-        jnp.sign(shift_x) == 1,
-        # Zero out the left side
-        lambda x: handle_shift_x_positive(x, shift_x, x_grid),
-        # Zero out the right side
-        lambda x: handle_shift_x_negative(x, shift_x, x_grid),
-        mask,
-    )
+    # Create masks for x and y shifts using branchless arithmetic.
+    # This is much more efficient than using lax.cond.
 
-    mask = lax.cond(
-        jnp.sign(shift_y) == 1,
-        # Zero out the bottom side
-        lambda x: handle_shift_y_positive(x, shift_y, y_grid),
-        # Zero out the top side
-        lambda x: handle_shift_y_negative(x, shift_y, y_grid),
-        mask,
-    )
+    # For positive x shift, valid pixels are where x_grid >= ceil(shift_x).
+    # For negative x shift, valid pixels are where x_grid < width - ceil(-shift_x).
+    shift_x_pos = jnp.maximum(0, shift_x)
+    shift_x_neg = jnp.maximum(0, -shift_x)
+    n_x_pos = jnp.ceil(shift_x_pos).astype(jnp.int32)
+    n_x_neg = jnp.ceil(shift_x_neg).astype(jnp.int32)
+    mask_x = (x_grid >= n_x_pos) & (x_grid < (width - n_x_neg))
 
-    return mask
+    # For positive y shift, valid pixels are where y_grid >= ceil(shift_y).
+    # For negative y shift, valid pixels are where y_grid < height - ceil(-shift_y).
+    shift_y_pos = jnp.maximum(0, shift_y)
+    shift_y_neg = jnp.maximum(0, -shift_y)
+    n_y_pos = jnp.ceil(shift_y_pos).astype(jnp.int32)
+    n_y_neg = jnp.ceil(shift_y_neg).astype(jnp.int32)
+    mask_y = (y_grid >= n_y_pos) & (y_grid < (height - n_y_neg))
+
+    # Combine the masks and multiply by the fill value
+    mask = mask_x & mask_y
+    return mask.astype(psf.dtype) * fill_val
 
 
 def get_near_inds_offsets_1D(
@@ -572,13 +544,8 @@ def basic_shift_val(input_val, converted_val, pixel_scale):
 
 def sym_shift_val(input_val, converted_val, pixel_scale):
     """Calculates the shift in pixels for a symmetric shift."""
-    flip = jnp.sign(input_val) == -1
-    return lax.cond(
-        flip,
-        lambda _: (input_val + converted_val) / pixel_scale,
-        lambda _: (input_val - converted_val) / pixel_scale,
-        operand=None,
-    )
+    sign = jnp.where(input_val >= 0, 1.0, -1.0)
+    return (input_val - sign * converted_val) / pixel_scale
 
 
 def x_basic_shift(input_val, converted_val, PSF, pixel_scale, x_phasor):
@@ -595,14 +562,9 @@ def y_basic_shift(input_val, converted_val, PSF, pixel_scale, y_phasor):
 
 def x_symmetric_shift(input_val, converted_val, PSF, pixel_scale, x_phasor):
     """Shifts the PSF to the specified position assuming symmetry about x=0."""
-    flip = jnp.sign(input_val) == -1
     # Apply a horizontal flip if the input value is negative
-    _PSF = lax.cond(
-        flip,
-        lambda _: jnp.fliplr(PSF),
-        lambda _: PSF,
-        operand=None,
-    )
+    _PSF = jnp.where(input_val < 0, jnp.fliplr(PSF), PSF)
+
     # Calculate the distance to shift the PSF
     shift = sym_shift_val(input_val, converted_val, pixel_scale)
     # Apply the shift
@@ -611,14 +573,9 @@ def x_symmetric_shift(input_val, converted_val, PSF, pixel_scale, x_phasor):
 
 def y_symmetric_shift(input_val, converted_val, PSF, pixel_scale, y_phasor):
     """Shifts the PSF to the specified position assuming symmetry about y=0."""
-    flip = jnp.sign(input_val) == -1
     # Apply a vertical flip if the input value is negative
-    _PSF = lax.cond(
-        flip,
-        lambda _: jnp.flipud(PSF),
-        lambda _: PSF,
-        operand=None,
-    )
+    _PSF = jnp.where(input_val < 0, jnp.flipud(PSF), PSF)
+
     # Get the distance to shift the PSF
     shift = sym_shift_val(input_val, converted_val, pixel_scale)
     # Apply the shift
@@ -931,3 +888,114 @@ def rot90_helper_jax(image, n_rot):
     )
 
     return _img
+
+
+def synthesize_psf_separable(
+    x,
+    y,
+    pixel_scale,
+    reshaped_psfs,
+    x_offsets,
+    y_offsets,
+    kx,
+    ky,
+    n_pad,
+    x_symmetric,
+    y_symmetric,
+    input_type,
+    max_offset,
+):
+    """Synthesizes PSF using separable 1D FFTs.
+
+    Optimized for speed and stability with even-sized padding.
+    """
+    # Neighbor lookup
+    if input_type == "1d":
+        _x, _y = convert_xy_1D(x, y)
+        inds, offsets = get_near_inds_offsets_1D(x_offsets, y_offsets, _x, _y)
+    else:
+        _x, _y = convert_xy_2DQ(x, y)
+        inds, offsets = get_near_inds_offsets_2D(x_offsets, y_offsets, _x, _y)
+
+    neighbors = reshaped_psfs[inds[:, 0], inds[:, 1]]
+
+    # Weights
+    dist_vecs = (jnp.array([_x, _y]) - offsets) / pixel_scale
+    dists_sq = jnp.sum(dist_vecs**2, axis=1)
+    weights = jnp.exp(-dists_sq / (2 * 0.25**2)) + 1e-16
+    weights = weights / jnp.sum(weights)
+
+    # Symmetry logic
+    eff_offsets_x = offsets[:, 0]
+    eff_offsets_y = offsets[:, 1]
+
+    if x_symmetric:
+        eff_offsets_x = jnp.where(x < 0, -offsets[:, 0], offsets[:, 0])
+        neighbors = lax.cond(
+            x < 0, lambda p: jnp.flip(p, axis=2), lambda p: p, neighbors
+        )
+    if y_symmetric:
+        eff_offsets_y = jnp.where(y < 0, -offsets[:, 1], offsets[:, 1])
+        neighbors = lax.cond(
+            y < 0, lambda p: jnp.flip(p, axis=1), lambda p: p, neighbors
+        )
+
+    # Calculate Shift (in pixels)
+    shift_x = (x - eff_offsets_x) / pixel_scale
+    shift_y = (y - eff_offsets_y) / pixel_scale
+
+    # Pad (using consistent n_pad from init)
+    # (K, H, W) -> (K, H_pad, W_pad)
+    pad_width = ((0, 0), (n_pad, n_pad), (n_pad, n_pad))
+    neighbors = jnp.pad(neighbors, pad_width)
+
+    # Capture width for robust reconstruction
+    _, h_pad, w_pad = neighbors.shape
+
+    # FFT X (Real-to-Complex, Axis 2)
+    # Output: (K, H_pad, W_pad//2 + 1)
+    spec = jnp.fft.rfft(neighbors, axis=2)
+
+    # Apply X-Shift
+    # kx: (W_freq,). shift_x: (K,).
+    # Broadcast: (K, 1, W_freq)
+    phasor_x = jnp.exp(-2j * jnp.pi * shift_x[:, None, None] * kx[None, None, :])
+    spec = spec * phasor_x
+
+    # FFT Y (Complex-to-Complex, Axis 1)
+    spec = jnp.fft.fft(spec, axis=1)
+
+    # Apply Y-Shift
+    # ky: (H_pad,). shift_y: (K,).
+    # Broadcast: (K, H_pad, 1)
+    phasor_y = jnp.exp(-2j * jnp.pi * shift_y[:, None, None] * ky[None, :, None])
+    spec = spec * phasor_y
+
+    # Weighted Sum (Collapse Neighbors)
+    # (K, H_freq, W_freq) -> (H_freq, W_freq)
+    summed_spec = jnp.sum(spec * weights[:, None, None], axis=0)
+
+    # IFFT Y
+    res = jnp.fft.ifft(summed_spec, axis=0)
+
+    # IFFT X (Complex-to-Real)
+    # Pass n=w_pad to ensure we reconstruct to the exact even size
+    res = jnp.fft.irfft(res, n=w_pad, axis=1)
+
+    # Unpad
+    h_orig = reshaped_psfs.shape[-2]
+    psf = res[n_pad : n_pad + h_orig, n_pad : n_pad + h_orig]
+
+    psf = jnp.maximum(psf, 0.0)
+
+    # Mask if out of bounds
+    # Only currently implemented for 1D (radial symmetry)
+    # max_offset must be provided (> 0) to enable masking
+    psf = lax.cond(
+        (input_type == "1d") & (max_offset > 0),
+        lambda p: jnp.where(jnp.sqrt(x**2 + y**2) > max_offset, 0.0, p),
+        lambda p: p,
+        psf,
+    )
+
+    return psf
