@@ -38,22 +38,22 @@ def convert_to_lod(
             Distance to the system
     """
     if x.unit == "pixel":
-        assert (
-            center_pix is not None
-        ), "Center pixel must be provided to convert pixel to lod."
-        assert (
-            pixel_scale is not None
-        ), "Pixel scale must be provided to convert pixel to lod."
-        assert pixel_scale.unit == (
-            lod / u.pix
-        ), f"Pixel scale must be in units of lod/pix, not {pixel_scale.unit}."
+        assert center_pix is not None, (
+            "Center pixel must be provided to convert pixel to lod."
+        )
+        assert pixel_scale is not None, (
+            "Pixel scale must be provided to convert pixel to lod."
+        )
+        assert pixel_scale.unit == (lod / u.pix), (
+            f"Pixel scale must be in units of lod/pix, not {pixel_scale.unit}."
+        )
 
         x = x - center_pix
         x = x * pixel_scale
         # Center the x position
     elif x.unit.physical_type == "angle":
         assert lam is not None, (
-            f"Wavelength must be provided to convert {x.unit.physical_type}" f" to lod."
+            f"Wavelength must be provided to convert {x.unit.physical_type} to lod."
         )
         assert D is not None, (
             f"Telescope diameter must be provided to convert {x.unit.physical_type}"
@@ -125,12 +125,12 @@ def convert_to_pix(
 
     elif x.unit.physical_type == "angle":
         # Conversion from angle to pixels
-        assert (
-            lam is not None
-        ), "Wavelength must be provided to convert angle to pixels."
-        assert (
-            D is not None
-        ), "Telescope diameter must be provided to convert angle to pixels."
+        assert lam is not None, (
+            "Wavelength must be provided to convert angle to pixels."
+        )
+        assert D is not None, (
+            "Telescope diameter must be provided to convert angle to pixels."
+        )
 
         # Convert angle to lambda/D
         x_lod = x.to(u.rad, lod_eq(lam, D))
@@ -139,15 +139,15 @@ def convert_to_pix(
 
     elif x.unit.physical_type == "length":
         # Conversion from length to pixels
-        assert (
-            lam is not None
-        ), "Wavelength must be provided to convert length to pixels."
-        assert (
-            D is not None
-        ), "Telescope diameter must be provided to convert length to pixels."
-        assert (
-            dist is not None
-        ), "Distance to system must be provided to convert length to pixels."
+        assert lam is not None, (
+            "Wavelength must be provided to convert length to pixels."
+        )
+        assert D is not None, (
+            "Telescope diameter must be provided to convert length to pixels."
+        )
+        assert dist is not None, (
+            "Distance to system must be provided to convert length to pixels."
+        )
 
         # Convert length to angle
         x_angle = np.arctan(x.to(u.m).value / dist.to(u.m).value) * u.rad
