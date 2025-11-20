@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.0](https://github.com/CoreySpohn/yippy/compare/v1.10.2...v1.11.0) (2025-11-20)
+
+
+### Features
+
+* Add ability to dump coronagraph performance files that match the EXOSIMS format ([edf276c](https://github.com/CoreySpohn/yippy/commit/edf276cabd858b9b82686f7a5585793273763177))
+* Performance metrics ([91d86b5](https://github.com/CoreySpohn/yippy/commit/91d86b5b04fd7b71fae7785f4b7ac6e954be2078))
+
 ## [1.10.2](https://github.com/CoreySpohn/yippy/compare/v1.10.1...v1.10.2) (2025-07-21)
 
 
