@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.1](https://github.com/CoreySpohn/yippy/compare/v1.11.0...v1.11.1) (2025-11-20)
+
+
+### Miscellaneous Chores
+
+* release 1.11.1 ([36fca7e](https://github.com/CoreySpohn/yippy/commit/36fca7e19fec936946d439642233363ba788a81d))
+
 ## [1.11.0](https://github.com/CoreySpohn/yippy/compare/v1.10.2...v1.11.0) (2025-11-20)
 
 
