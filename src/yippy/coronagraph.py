@@ -55,9 +55,10 @@ class Coronagraph:
         sky_trans_file: str = "sky_trans.fits",
         performance_file: str = "coro_perf.fits",
         x_symmetric: bool = True,
-        y_symmetric: bool = False,
+        y_symmetric: bool = True,
         cpu_cores: int = 4,
         platform: str = "cpu",
+        use_quarter_psf_datacube: bool = False,
     ):
         """Initialize the Coronagraph object.
 
@@ -97,6 +98,10 @@ class Coronagraph:
             platform (str):
                 Platform to use for JAX computation. Default is "cpu". Options are
                 "cpu", "gpu", "tpu".
+            use_quarter_psf_datacube (bool):
+                Whether to compute the PSF datacube in only the first quadrant.
+                This is faster and uses less memory, but may not be accurate for
+                all coronagraphs. Default is False.
         """
         ###################
         # Read input data #
@@ -157,6 +162,7 @@ class Coronagraph:
         # y psf offset, x, y). Given the computational cost of generating this
         # datacube, it is only generated when needed.
         self.has_psf_datacube = False
+        self.use_quarter_psf_datacube = use_quarter_psf_datacube
 
         # Shape of the images in the PSFs
         self.psf_shape = np.array([self.header.naxis1, self.header.naxis2])
@@ -207,7 +213,8 @@ class Coronagraph:
             batch_size (int):
                 Number of PSFs to generate in each batch. Default is 128.
         """
-        datacube_path = Path(self.yip_path, "psf_datacube.npy")
+        ext = "_quarter" if self.use_quarter_psf_datacube else ""
+        datacube_path = Path(self.yip_path, f"psf_datacube{ext}.npy")
         if datacube_path.exists():
             logger.info(f"Loading PSF datacube from {datacube_path}.")
             psfs = jnp.load(datacube_path)
@@ -215,11 +222,22 @@ class Coronagraph:
             # Create data cube of spatially dependent PSFs.
             psfs_shape = (*self.psf_shape, *self.psf_shape)
             psfs = np.zeros(psfs_shape, dtype=np.float32)
-            pixel_lod = (
-                (np.arange(self.npixels) - ((self.npixels - 1) // 2))
-                * u.pixel
-                * self.pixel_scale
-            ).value
+            if not self.use_quarter_psf_datacube:
+                pixel_lod = (
+                    (np.arange(self.npixels) - ((self.npixels - 1) // 2))
+                    * u.pixel
+                    * self.pixel_scale
+                ).value
+            else:
+                center_idx = (self.npixels - 1) // 2
+                pixel_lod = (
+                    (np.arange(center_idx, self.npixels) - center_idx)
+                    * u.pixel
+                    * self.pixel_scale
+                ).value
+            n_src = len(pixel_lod)
+            psfs_shape = (n_src, n_src, *self.psf_shape)
+            psfs = np.zeros(psfs_shape, dtype=np.float32)
 
             # Get the pixel coordinates for the PSF evaluations
             x_lod, y_lod = np.meshgrid(pixel_lod, pixel_lod, indexing="xy")
@@ -227,7 +245,8 @@ class Coronagraph:
             n_points = points.shape[0]
 
             logger.info(
-                "Calculating data cube of spatially dependent PSFs, please hold..."
+                f"Calculating {'quarter' if ext else 'full'} data cube of "
+                f"spatially dependent PSFs ({n_points} points), please hold..."
             )
             with tqdm(total=n_points, desc="Computing PSFs") as pb:
                 for i in range(0, n_points, batch_size):

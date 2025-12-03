@@ -166,6 +166,9 @@ class OffAx:
             # center is within the image
             self.max_offset_in_image = psfs.shape[1] / 2 * u.pix * self.pixel_scale
 
+        self.flat_psfs = psfs
+        self.flat_offsets = offsets
+
         # Initialize the reshaped PSFs array to allow us to index by the offsets
         self.reshaped_psfs = np.empty((len(offsets_x), len(offsets_y), *psfs.shape[1:]))
         self.x_inds = np.searchsorted(offsets_x, offsets[:, 0])

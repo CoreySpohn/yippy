@@ -1,6 +1,5 @@
 """Module for handling off-axis PSFs using JAX."""
 
-from functools import partial
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -12,7 +11,7 @@ from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
 from lod_unit import lod
 
-from .jax_funcs import synthesize_psf_separable
+from .jax_funcs import synthesize_psf_idw, synthesize_psf_separable
 from .offax import OffAx
 
 
@@ -40,7 +39,7 @@ class OffJAX(OffAx):
         pixel_scale: Quantity,
         x_symmetric: bool,
         y_symmetric: bool,
-        cpu_cores: int = 1,
+        cpu_cores: int = 4,
         platform: str = "cpu",
     ) -> None:
         """Initializes the OffJAX class by casting YIP data to JAX arrays."""
@@ -62,6 +61,11 @@ class OffJAX(OffAx):
 
         self.x_offsets = device_put(jnp.array(self.x_offsets))
         self.y_offsets = device_put(jnp.array(self.y_offsets))
+        # For 2D IDW interpolation
+        self.flat_psfs = device_put(jnp.array(self.flat_psfs))
+        self.flat_x_offsets = device_put(jnp.array(self.flat_offsets[:, 0]))
+        self.flat_y_offsets = device_put(jnp.array(self.flat_offsets[:, 1]))
+
         n_pixels = self.reshaped_psfs.shape[-1]
         n_pad = int(1.5 * n_pixels)
         n_fft = n_pixels + 2 * n_pad
@@ -81,50 +85,104 @@ class OffJAX(OffAx):
         max_offset = -1.0
         if self.type == "1d" and hasattr(self, "max_offset_in_image"):
             max_offset = self.max_offset_in_image.to(lod).value
+        if self.type == "1d":
+            # Optimized based on the assumption that the data is on a 1D grid
+            self.psf_handle = self.reshaped_psfs
+            self.x_handle = self.x_offsets
+            self.y_handle = self.y_offsets
 
-        # Bind the function
-        self.create_psf = partial(
-            synthesize_psf_separable,
-            pixel_scale=self.pixel_scale.value,
-            reshaped_psfs=self.reshaped_psfs,
-            x_offsets=self.x_offsets,
-            y_offsets=self.y_offsets,
-            kx=self.kx,
-            ky=self.ky,
-            n_pad=n_pad,
-            x_symmetric=self.x_symmetric,
-            y_symmetric=self.y_symmetric,
-            input_type=self.type,
-            max_offset=max_offset,
+            max_offset = -1.0
+            if hasattr(self, "max_offset_in_image"):
+                max_offset = self.max_offset_in_image.to(lod).value
+
+            def create_psf_kernel(x, y, psfs, x_off, y_off, kx, ky):
+                return synthesize_psf_separable(
+                    x,
+                    y,
+                    pixel_scale=self.pixel_scale.value,
+                    reshaped_psfs=psfs,
+                    x_offsets=x_off,
+                    y_offsets=y_off,
+                    kx=kx,
+                    ky=ky,
+                    n_pad=n_pad,
+                    x_symmetric=self.x_symmetric,
+                    y_symmetric=self.y_symmetric,
+                    input_type=self.type,
+                    max_offset=max_offset,
+                )
+
+        else:
+            # 2D, uses a different interpolation method for irregular grids
+            self.psf_handle = self.flat_psfs
+            self.x_handle = self.flat_x_offsets
+            self.y_handle = self.flat_y_offsets
+
+            def create_psf_kernel(x, y, psfs, x_off, y_off, kx, ky):
+                return synthesize_psf_idw(
+                    x,
+                    y,
+                    pixel_scale=self.pixel_scale.value,
+                    flat_psfs=psfs,
+                    flat_x_offsets=x_off,
+                    flat_y_offsets=y_off,
+                    kx=kx,
+                    ky=ky,
+                    n_pad=n_pad,
+                    x_symmetric=self.x_symmetric,
+                    y_symmetric=self.y_symmetric,
+                    input_type=self.type,
+                    k_neighbors=4,
+                )
+
+        # ---------------------------------------------------------
+        # BINDING
+        # ---------------------------------------------------------
+        self.create_psfs_kernel = vmap(
+            create_psf_kernel, in_axes=(0, 0, None, None, None, None, None)
         )
+        self.create_psfs_j = jit(self.create_psfs_kernel)
+        self.create_psf_kernel_single = jit(create_psf_kernel)
 
-        self.create_psfs = vmap(self.create_psf, in_axes=(0, 0))
-        self.create_psfs_j = jit(self.create_psfs)
+        # ---------------------------------------------------------
+        # WRAPPERS
+        # ---------------------------------------------------------
+        # These now use the handles selected above (Grid vs Cloud)
+
+        def create_psfs_wrapper(x, y):
+            return self.create_psfs_j(
+                x,
+                y,
+                self.psf_handle,
+                self.x_handle,
+                self.y_handle,
+                self.kx,
+                self.ky,
+            )
+
+        self.create_psfs = create_psfs_wrapper
+
+        def create_psf_wrapper(x, y):
+            return self.create_psf_kernel_single(
+                x,
+                y,
+                self.psf_handle,
+                self.x_handle,
+                self.y_handle,
+                self.kx,
+                self.ky,
+            )
+
+        self.create_psf = create_psf_wrapper
 
     def create_psfs_parallel(self, x_vals, y_vals):
-        """Create off-axis PSFs at multiple positions in parallel using shard_map.
-
-        If the number of (x, y) pairs doesn't evenly divide the number of devices,
-        we pad the inputs and then discard the extra results after processing.
-
-        Args:
-            x_vals (jnp.ndarray):
-                Array of x-coordinates of shape (N,).
-            y_vals (jnp.ndarray):
-                Array of y-coordinates of shape (N,).
-
-        Returns:
-            jnp.ndarray:
-                Array of off-axis PSFs of shape (N, height, width).
-        """
-        D = self.cpu_cores  # Number of devices
+        """Create off-axis PSFs at multiple positions in parallel using shard_map."""
+        D = self.cpu_cores
         N = x_vals.shape[0]
 
-        # Determine if we need padding
         remainder = N % D
         padding_needed = (D - remainder) if remainder != 0 else 0
 
-        # Pad inputs so total number of items is divisible by D
         if padding_needed > 0:
             x_vals_padded = jnp.pad(x_vals, (0, padding_needed), constant_values=0)
             y_vals_padded = jnp.pad(y_vals, (0, padding_needed), constant_values=0)
@@ -132,23 +190,27 @@ class OffJAX(OffAx):
             x_vals_padded = x_vals
             y_vals_padded = y_vals
 
-        # Set up the device mesh for shard_map
         mesh = Mesh(
             mesh_utils.create_device_mesh([D]),
             axis_names=("i",),
         )
 
-        # Distribute computation across devices. Each device gets N/D items.
-        # in_specs=P('i') will shard the first dimension across the 'i' axis.
         psfs_padded = shard_map(
             self.create_psfs_j,
             mesh=mesh,
-            in_specs=P("i"),
+            in_specs=(P("i"), P("i"), P(), P(), P(), P(), P()),
             out_specs=P("i"),
             check_rep=False,
-        )(x_vals_padded, y_vals_padded)
+        )(
+            x_vals_padded,
+            y_vals_padded,
+            self.psf_handle,
+            self.x_handle,
+            self.y_handle,
+            self.kx,
+            self.ky,
+        )
 
-        # Truncate the padded results if we added any padding
         if padding_needed > 0:
             psfs = psfs_padded[:N]
         else:

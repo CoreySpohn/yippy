@@ -1052,3 +1052,95 @@ def synthesize_psf_separable(
     )
 
     return psf
+
+
+def synthesize_psf_idw(
+    x,
+    y,
+    pixel_scale,
+    flat_psfs,
+    flat_x_offsets,
+    flat_y_offsets,
+    kx,
+    ky,
+    n_pad,
+    x_symmetric,
+    y_symmetric,
+    input_type,
+    k_neighbors=4,
+):
+    """Synthesizes PSF using Inverse Distance Weighting (IDW) for irregular grids."""
+    # Handle Symmetry (Map to 1st Quadrant if 2DQ)
+    if input_type == "2dq":
+        _x, _y = convert_xy_2DQ(x, y)
+    elif input_type == "1d":
+        _x, _y = convert_xy_1D(x, y)
+    else:
+        _x, _y = x, y
+
+    # Compute Distances to ALL samples
+    # flat_x_offsets shape: (N_samples,)
+    d2 = (flat_x_offsets - _x) ** 2 + (flat_y_offsets - _y) ** 2
+    dists = jnp.sqrt(d2)
+
+    # Find K Nearest Neighbors
+    # We use top_k on negative distance to find the smallest distances
+    neg_dists, inds = lax.top_k(-dists, k_neighbors)
+    near_dists = -neg_dists
+
+    # Get Neighbors
+    neighbors = flat_psfs[inds]
+
+    # Calculate Weights (Inverse Distance)
+    # Add epsilon to avoid divide by zero
+    weights = 1.0 / (near_dists + 1e-10)
+    weights = weights / jnp.sum(weights)
+
+    # Apply Symmetry Flips to neighbors
+    eff_offsets_x = flat_x_offsets[inds]
+    eff_offsets_y = flat_y_offsets[inds]
+
+    if x_symmetric:
+        # Check against original x
+        neighbors = lax.cond(
+            x < 0, lambda p: jnp.flip(p, axis=2), lambda p: p, neighbors
+        )
+        eff_offsets_x = jnp.where(x < 0, -eff_offsets_x, eff_offsets_x)
+
+    if y_symmetric:
+        # Check against original y
+        neighbors = lax.cond(
+            y < 0, lambda p: jnp.flip(p, axis=1), lambda p: p, neighbors
+        )
+        eff_offsets_y = jnp.where(y < 0, -eff_offsets_y, eff_offsets_y)
+
+    # Calculate Shift (in pixels)
+    shift_x = (x - eff_offsets_x) / pixel_scale
+    shift_y = (y - eff_offsets_y) / pixel_scale
+
+    # Pad and FFT (Standard Shift Logic)
+    pad_width = ((0, 0), (n_pad, n_pad), (n_pad, n_pad))
+    neighbors = jnp.pad(neighbors, pad_width)
+
+    # FFT X
+    spec = jnp.fft.rfft(neighbors, axis=2)
+    phasor_x = jnp.exp(-2j * jnp.pi * shift_x[:, None, None] * kx[None, None, :])
+    spec = spec * phasor_x
+
+    # FFT Y
+    spec = jnp.fft.fft(spec, axis=1)
+    phasor_y = jnp.exp(-2j * jnp.pi * shift_y[:, None, None] * ky[None, :, None])
+    spec = spec * phasor_y
+
+    # Weighted Sum
+    summed_spec = jnp.sum(spec * weights[:, None, None], axis=0)
+
+    # IFFT
+    res = jnp.fft.ifft(summed_spec, axis=0)
+    res = jnp.fft.irfft(res, n=neighbors.shape[-1], axis=1)
+
+    # Unpad
+    h_orig = flat_psfs.shape[-2]
+    psf = res[n_pad : n_pad + h_orig, n_pad : n_pad + h_orig]
+
+    return jnp.maximum(psf, 0.0)
