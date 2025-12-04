@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.0](https://github.com/CoreySpohn/yippy/compare/v1.11.2...v1.12.0) (2025-12-04)
+
+
+### Features
+
+* Add support for Inverse Distance Weighting (IDW) PSF synthesis and enable quarter PSF datacube computation for OffJAX ([fe0a554](https://github.com/CoreySpohn/yippy/commit/fe0a5548e1441ed648c3b7ddd22e20408102b0ed))
+
 ## [1.11.2](https://github.com/CoreySpohn/yippy/compare/v1.11.1...v1.11.2) (2025-11-20)
 
 
