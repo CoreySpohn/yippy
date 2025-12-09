@@ -5,6 +5,7 @@ from pathlib import Path
 
 import astropy.io.fits as pyfits
 import astropy.units as u
+import jax
 import jax.numpy as jnp
 import numpy as np
 from lod_unit import lod
@@ -158,6 +159,10 @@ class Coronagraph:
         # Get the sky_trans mask
         self.sky_trans = SkyTrans(yip_path, sky_trans_file)
 
+        # Store platform and use_jax for later use
+        self.platform = platform
+        self.use_jax = use_jax
+
         # PSF datacube here is a 4D array of PSFs at each pixel (x psf offset,
         # y psf offset, x, y). Given the computational cost of generating this
         # datacube, it is only generated when needed.
@@ -263,6 +268,29 @@ class Coronagraph:
                     pb.update(batch_points.shape[0])
             jnp.save(datacube_path, psfs)
             logger.info(f"PSF datacube saved to {datacube_path}.")
+
+        # Move datacube to GPU/TPU device if conditions are met
+        if (
+            self.use_quarter_psf_datacube
+            and self.use_jax
+            and self.platform in ("gpu", "tpu")
+        ):
+            logger.info(
+                f"Moving PSF datacube to {self.platform.upper()} device "
+                "(quarter symmetric datacube)"
+            )
+            # Convert to JAX array and place on device
+            try:
+                psfs = jax.device_put(jnp.array(psfs))
+                logger.info(
+                    f"Successfully moved PSF datacube to {self.platform.upper()} device"
+                )
+            except (MemoryError, RuntimeError) as e:
+                logger.warning(
+                    f"Failed to move PSF datacube to {self.platform.upper()} device "
+                    f"(insufficient memory): {e}. Keeping datacube on CPU."
+                )
+                # psfs remains as numpy array on CPU
 
         self.has_psf_datacube = True
         self.psf_datacube = psfs
