@@ -73,7 +73,7 @@ class StellarIntens:
             self.center_y = psfs[0].shape[0] / 2
 
         # Load the stellar angular diameters in units of lambda/D
-        self.diams = pyfits.getdata(Path(yip_dir, stellar_diam_file), 0) * lod
+        self.diams = pyfits.getdata(Path(yip_dir, stellar_diam_file), 0).flatten() * lod
         # For interpolation purpose, replace 0s with smallest positive value
         self.diams[self.diams == 0] = np.finfo(np.float32).eps * lod
 
