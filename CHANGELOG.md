@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.1](https://github.com/CoreySpohn/yippy/compare/v1.12.0...v1.12.1) (2025-12-10)
+
+
+### Bug Fixes
+
+* Remove all references to old sparse matrix reshaped_psfs ([3db774a](https://github.com/CoreySpohn/yippy/commit/3db774a477aa5d22e41dabbbafae7d670689c9ef))
+
 ## [1.12.0](https://github.com/CoreySpohn/yippy/compare/v1.11.2...v1.12.0) (2025-12-09)
 
 
