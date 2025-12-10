@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.12.2](https://github.com/CoreySpohn/yippy/compare/v1.12.1...v1.12.2) (2025-12-10)
+
+
+### Bug Fixes
+
+* Improve PSF datacube device handling for JAX compatibility ([b94ad19](https://github.com/CoreySpohn/yippy/commit/b94ad19d5b640e9ca1011da738d1ac7326ce4e8a))
+
 ## [1.12.1](https://github.com/CoreySpohn/yippy/compare/v1.12.0...v1.12.1) (2025-12-10)
 
 
