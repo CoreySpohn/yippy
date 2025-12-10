@@ -275,22 +275,35 @@ class Coronagraph:
             and self.use_jax
             and self.platform in ("gpu", "tpu")
         ):
-            logger.info(
-                f"Moving PSF datacube to {self.platform.upper()} device "
-                "(quarter symmetric datacube)"
+            # Check if already a JAX array on the target device
+            target_device = jax.devices(self.platform)[0]
+            already_on_device = (
+                hasattr(psfs, "devices") and target_device in psfs.devices()
             )
-            # Convert to JAX array and place on device
-            try:
-                psfs = jax.device_put(jnp.array(psfs))
+
+            if already_on_device:
+                logger.info(f"PSF datacube already on {self.platform.upper()} device")
+            else:
                 logger.info(
-                    f"Successfully moved PSF datacube to {self.platform.upper()} device"
+                    f"Moving PSF datacube to {self.platform.upper()} device "
+                    "(quarter symmetric datacube)"
                 )
-            except (MemoryError, RuntimeError) as e:
-                logger.warning(
-                    f"Failed to move PSF datacube to {self.platform.upper()} device "
-                    f"(insufficient memory): {e}. Keeping datacube on CPU."
-                )
-                # psfs remains as numpy array on CPU
+                # Convert to JAX array and place on device
+                # Note: avoid jnp.array() on existing JAX array to prevent copy
+                try:
+                    if not isinstance(psfs, jax.Array):
+                        psfs = jnp.asarray(psfs, dtype=jnp.float32)
+                    psfs = jax.device_put(psfs, target_device)
+                    logger.info(
+                        f"Successfully moved PSF datacube to {self.platform.upper()} "
+                        "device"
+                    )
+                except (MemoryError, RuntimeError) as e:
+                    logger.warning(
+                        f"Failed to move PSF datacube to {self.platform.upper()} "
+                        f"device (insufficient memory): {e}. Keeping on CPU."
+                    )
+                    # psfs remains as numpy array on CPU
 
         self.has_psf_datacube = True
         self.psf_datacube = psfs
