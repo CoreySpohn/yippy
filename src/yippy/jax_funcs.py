@@ -894,9 +894,10 @@ def synthesize_psf_separable(
     x,
     y,
     pixel_scale,
-    reshaped_psfs,
+    flat_psfs,
     x_offsets,
     y_offsets,
+    offset_to_flat_idx,
     kx,
     ky,
     n_pad,
@@ -908,6 +909,41 @@ def synthesize_psf_separable(
     """Synthesizes PSF using separable 1D FFTs.
 
     Optimized for speed and stability with even-sized padding.
+    Uses flat_psfs with offset_to_flat_idx mapping for memory efficiency.
+
+    Args:
+        x (float):
+            X coordinate in lambda/D.
+        y (float):
+            Y coordinate in lambda/D.
+        pixel_scale (float):
+            Pixel scale in lambda/D per pixel.
+        flat_psfs (jnp.ndarray):
+            Flat array of PSFs with shape (N_psfs, H, W).
+        x_offsets (jnp.ndarray):
+            Sorted array of unique x offsets.
+        y_offsets (jnp.ndarray):
+            Sorted array of unique y offsets.
+        offset_to_flat_idx (jnp.ndarray):
+            2D array mapping (x_idx, y_idx) -> flat_psfs index.
+        kx (jnp.ndarray):
+            FFT frequencies for x-axis.
+        ky (jnp.ndarray):
+            FFT frequencies for y-axis.
+        n_pad (int):
+            Number of padding pixels.
+        x_symmetric (bool):
+            Whether PSFs are symmetric about x=0.
+        y_symmetric (bool):
+            Whether PSFs are symmetric about y=0.
+        input_type (str):
+            Type of input data ("1d", "2dq", or "2df").
+        max_offset (float):
+            Maximum valid offset distance (-1 to disable bounds check).
+
+    Returns:
+        jnp.ndarray:
+            Synthesized PSF at the requested (x, y) position.
     """
     # Neighbor lookup
     if input_type == "1d":
@@ -917,7 +953,9 @@ def synthesize_psf_separable(
         _x, _y = convert_xy_2DQ(x, y)
         inds, offsets = get_near_inds_offsets_2D(x_offsets, y_offsets, _x, _y)
 
-    neighbors = reshaped_psfs[inds[:, 0], inds[:, 1]]
+    # Use the index mapping to get flat_psfs indices from (x_idx, y_idx) pairs
+    flat_indices = offset_to_flat_idx[inds[:, 0], inds[:, 1]]
+    neighbors = flat_psfs[flat_indices]
 
     # We calculate weights based on the relative position of _x/_y
     # within the bounding box of the neighbors found.
@@ -1036,7 +1074,7 @@ def synthesize_psf_separable(
     res = jnp.fft.irfft(res, n=w_pad, axis=1)
 
     # Unpad
-    h_orig = reshaped_psfs.shape[-2]
+    h_orig = flat_psfs.shape[-2]
     psf = res[n_pad : n_pad + h_orig, n_pad : n_pad + h_orig]
 
     psf = jnp.maximum(psf, 0.0)

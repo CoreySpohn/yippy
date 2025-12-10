@@ -678,8 +678,11 @@ class Coronagraph:
                         )
                         continue
 
-                # Get planet PSF
-                planet_psf = self.offax.reshaped_psfs[i, j]
+                # Get planet PSF using the index mapping
+                planet_psf = self.offax.get_psf_by_offset_idx(i, j)
+                if planet_psf is None:
+                    # No PSF exists at this (x, y) combination (sparse grid)
+                    continue
 
                 # Pixel coordinates are needed for all computations
                 px = convert_to_pix(

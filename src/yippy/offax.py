@@ -168,19 +168,50 @@ class OffAx:
 
         self.flat_psfs = psfs
         self.flat_offsets = offsets
+        self.n_psfs = len(offsets)
 
-        # Initialize the reshaped PSFs array to allow us to index by the offsets
-        self.reshaped_psfs = np.empty((len(offsets_x), len(offsets_y), *psfs.shape[1:]))
+        # Create index mapping from (x_idx, y_idx) -> flat_psfs index
+        # This avoids creating a sparse 4D reshaped_psfs array
         self.x_inds = np.searchsorted(offsets_x, offsets[:, 0])
         self.y_inds = np.searchsorted(offsets_y, offsets[:, 1])
-        self.reshaped_psfs[self.x_inds, self.y_inds] = psfs
-        self.n_psfs = len(offsets)
+
+        # Create a 2D index map: offset_to_flat_idx[x_idx, y_idx] = flat_psf_index
+        # Use -1 to indicate no PSF at that (x_idx, y_idx) combination
+        self.offset_to_flat_idx = np.full(
+            (len(offsets_x), len(offsets_y)), -1, dtype=np.int32
+        )
+        for flat_idx in range(len(offsets)):
+            self.offset_to_flat_idx[self.x_inds[flat_idx], self.y_inds[flat_idx]] = (
+                flat_idx
+            )
 
         self.x_offsets = offsets_x
         self.y_offsets = offsets_y
         # self.offsets = np.array(list(product(self.x_offsets, self.y_offsets)))
         self.x_range = np.array([self.x_offsets[0], self.x_offsets[-1]])
         self.y_range = np.array([self.y_offsets[0], self.y_offsets[-1]])
+
+        # Store PSF shape for convenience
+        self.psf_shape = self.flat_psfs.shape[1:]
+
+    def get_psf_by_offset_idx(self, x_idx: int, y_idx: int):
+        """Get PSF at the given offset indices.
+
+        Args:
+            x_idx (int):
+                Index into x_offsets array.
+            y_idx (int):
+                Index into y_offsets array.
+
+        Returns:
+            np.ndarray:
+                The PSF at the given offset indices, or None if no PSF exists
+                at that combination.
+        """
+        flat_idx = self.offset_to_flat_idx[x_idx, y_idx]
+        if flat_idx >= 0:
+            return self.flat_psfs[flat_idx]
+        return None
 
     def create_psf(self, x: float, y: float):
         """Creates and returns the PSF at the specified off-axis position.
@@ -222,7 +253,9 @@ class OffAx:
         if x in self.x_offsets and y in self.y_offsets:
             x_ind = np.searchsorted(self.x_offsets, x)
             y_ind = np.searchsorted(self.y_offsets, y)
-            return self.reshaped_psfs[x_ind, y_ind]
+            flat_idx = self.offset_to_flat_idx[x_ind, y_ind]
+            if flat_idx >= 0:
+                return self.flat_psfs[flat_idx]
 
         # Translate position based on type
         if self.type == "1d":
@@ -259,8 +292,9 @@ class OffAx:
         # Get the (x, y) offsets of the nearest PSFs to the input (x, y)
         near_offsets = np.array(np.meshgrid(x_vals, y_vals)).T.reshape(-1, 2)
 
-        # Get the PSFs at the nearest offsets
-        near_psfs = self.reshaped_psfs[near_inds[:, 0], near_inds[:, 1]]
+        # Get the PSFs at the nearest offsets using the index mapping
+        flat_indices = self.offset_to_flat_idx[near_inds[:, 0], near_inds[:, 1]]
+        near_psfs = self.flat_psfs[flat_indices]
 
         # Combine the PSFs
         if len(near_psfs) > 1:
@@ -320,7 +354,7 @@ class OffAx:
 
     def create_psfs(self, x: NDArray, y: NDArray) -> NDArray:
         """Creates and returns the PSFs at the specified off-axis positions."""
-        psfs = np.empty((len(x), *self.reshaped_psfs.shape[2:]))
+        psfs = np.empty((len(x), *self.flat_psfs.shape[1:]))
         for i in range(len(x)):
             psfs[i] = self.create_psf(x[i], y[i])
         return psfs
