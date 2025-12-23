@@ -18,6 +18,7 @@ class OffJAX(OffAx):
     """Class for handling off-axis PSFs using JAX.
 
     This class inherits from OffAx and uses JAX for optimized computation.
+    Memory-efficient: stores PSFs in flat array with index mapping.
 
     Attributes:
         pixel_scale (Quantity):
@@ -26,8 +27,10 @@ class OffJAX(OffAx):
             Central x position in the PSF data.
         center_y (Quantity):
             Central y position in the PSF data.
-        reshaped_psfs (jnp.ndarray):
-            The PSF data, cast as a JAX array.
+        flat_psfs (jnp.ndarray):
+            Flat array of PSF data with shape (N_psfs, H, W), cast as JAX array.
+        offset_to_flat_idx (jnp.ndarray):
+            2D index mapping from (x_idx, y_idx) -> flat_psfs index.
     """
 
     def __init__(
@@ -55,17 +58,18 @@ class OffJAX(OffAx):
 
         ##############
         # Convert the PSF data to JAX arrays
+        # Note: We only store flat_psfs and the index mapping to minimize memory
         ##############
-        self.reshaped_psfs = device_put(jnp.array(self.reshaped_psfs))
-
-        self.x_offsets = device_put(jnp.array(self.x_offsets))
-        self.y_offsets = device_put(jnp.array(self.y_offsets))
-        # For 2D IDW interpolation
         self.flat_psfs = device_put(jnp.array(self.flat_psfs))
         self.flat_x_offsets = device_put(jnp.array(self.flat_offsets[:, 0]))
         self.flat_y_offsets = device_put(jnp.array(self.flat_offsets[:, 1]))
 
-        n_pixels = self.reshaped_psfs.shape[-1]
+        # Convert offset arrays and index mapping to JAX arrays
+        self.x_offsets = device_put(jnp.array(self.x_offsets))
+        self.y_offsets = device_put(jnp.array(self.y_offsets))
+        self.offset_to_flat_idx = device_put(jnp.array(self.offset_to_flat_idx))
+
+        n_pixels = self.flat_psfs.shape[-1]
         n_pad = int(1.5 * n_pixels)
         n_fft = n_pixels + 2 * n_pad
         n_pad = int(1.5 * n_pixels)
@@ -84,24 +88,23 @@ class OffJAX(OffAx):
         max_offset = -1.0
         if self.type == "1d" and hasattr(self, "max_offset_in_image"):
             max_offset = self.max_offset_in_image.to(lod).value
-        if self.type == "1d":
-            # Optimized based on the assumption that the data is on a 1D grid
-            self.psf_handle = self.reshaped_psfs
-            self.x_handle = self.x_offsets
-            self.y_handle = self.y_offsets
 
+        if self.type == "1d":
+            # Optimized for 1D (radially symmetric) data using separable FFTs
+            # Uses flat_psfs with offset_to_flat_idx mapping for memory efficiency
             max_offset = -1.0
             if hasattr(self, "max_offset_in_image"):
                 max_offset = self.max_offset_in_image.to(lod).value
 
-            def create_psf_kernel(x, y, psfs, x_off, y_off, kx, ky):
+            def create_psf_kernel(x, y, psfs, x_off, y_off, idx_map, kx, ky):
                 return synthesize_psf_separable(
                     x,
                     y,
                     pixel_scale=self.pixel_scale.value,
-                    reshaped_psfs=psfs,
+                    flat_psfs=psfs,
                     x_offsets=x_off,
                     y_offsets=y_off,
+                    offset_to_flat_idx=idx_map,
                     kx=kx,
                     ky=ky,
                     n_pad=n_pad,
@@ -112,12 +115,10 @@ class OffJAX(OffAx):
                 )
 
         else:
-            # 2D, uses a different interpolation method for irregular grids
-            self.psf_handle = self.flat_psfs
-            self.x_handle = self.flat_x_offsets
-            self.y_handle = self.flat_y_offsets
-
-            def create_psf_kernel(x, y, psfs, x_off, y_off, kx, ky):
+            # 2D, uses IDW interpolation for irregular grids
+            # Uses flat_psfs with flat_x_offsets/flat_y_offsets directly
+            # Note: idx_map param is unused for IDW but kept for consistent signature
+            def create_psf_kernel(x, y, psfs, x_off, y_off, idx_map, kx, ky):
                 return synthesize_psf_idw(
                     x,
                     y,
@@ -138,7 +139,7 @@ class OffJAX(OffAx):
         # BINDING
         # ---------------------------------------------------------
         self.create_psfs_kernel = vmap(
-            create_psf_kernel, in_axes=(0, 0, None, None, None, None, None)
+            create_psf_kernel, in_axes=(0, 0, None, None, None, None, None, None)
         )
         self.create_psfs_j = jit(self.create_psfs_kernel)
         self.create_psf_kernel_single = jit(create_psf_kernel)
@@ -146,15 +147,24 @@ class OffJAX(OffAx):
         # ---------------------------------------------------------
         # WRAPPERS
         # ---------------------------------------------------------
-        # These now use the handles selected above (Grid vs Cloud)
+        # Select appropriate handles based on interpolation type
+        if self.type == "1d":
+            # For separable interpolation: use unique offset arrays + index mapping
+            x_handle = self.x_offsets
+            y_handle = self.y_offsets
+        else:
+            # For IDW interpolation: use flat offset arrays
+            x_handle = self.flat_x_offsets
+            y_handle = self.flat_y_offsets
 
         def create_psfs_wrapper(x, y):
             return self.create_psfs_j(
                 x,
                 y,
-                self.psf_handle,
-                self.x_handle,
-                self.y_handle,
+                self.flat_psfs,
+                x_handle,
+                y_handle,
+                self.offset_to_flat_idx,
                 self.kx,
                 self.ky,
             )
@@ -165,9 +175,10 @@ class OffJAX(OffAx):
             return self.create_psf_kernel_single(
                 x,
                 y,
-                self.psf_handle,
-                self.x_handle,
-                self.y_handle,
+                self.flat_psfs,
+                x_handle,
+                y_handle,
+                self.offset_to_flat_idx,
                 self.kx,
                 self.ky,
             )
@@ -194,18 +205,27 @@ class OffJAX(OffAx):
             axis_names=("i",),
         )
 
+        # Select appropriate offset handles based on interpolation type
+        if self.type == "1d":
+            x_handle = self.x_offsets
+            y_handle = self.y_offsets
+        else:
+            x_handle = self.flat_x_offsets
+            y_handle = self.flat_y_offsets
+
         psfs_padded = shard_map(
             self.create_psfs_j,
             mesh=mesh,
-            in_specs=(P("i"), P("i"), P(), P(), P(), P(), P()),
+            in_specs=(P("i"), P("i"), P(), P(), P(), P(), P(), P()),
             out_specs=P("i"),
             check_rep=False,
         )(
             x_vals_padded,
             y_vals_padded,
-            self.psf_handle,
-            self.x_handle,
-            self.y_handle,
+            self.flat_psfs,
+            x_handle,
+            y_handle,
+            self.offset_to_flat_idx,
             self.kx,
             self.ky,
         )

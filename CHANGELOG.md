@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.12.2](https://github.com/CoreySpohn/yippy/compare/v1.12.1...v1.12.2) (2025-12-10)
+
+
+### Bug Fixes
+
+* Improve PSF datacube device handling for JAX compatibility ([b94ad19](https://github.com/CoreySpohn/yippy/commit/b94ad19d5b640e9ca1011da738d1ac7326ce4e8a))
+
+## [1.12.1](https://github.com/CoreySpohn/yippy/compare/v1.12.0...v1.12.1) (2025-12-10)
+
+
+### Bug Fixes
+
+* Remove all references to old sparse matrix reshaped_psfs ([3db774a](https://github.com/CoreySpohn/yippy/commit/3db774a477aa5d22e41dabbbafae7d670689c9ef))
+
+## [1.12.0](https://github.com/CoreySpohn/yippy/compare/v1.11.2...v1.12.0) (2025-12-09)
+
+
+### Features
+
+* Add support for Inverse Distance Weighting (IDW) PSF synthesis and enable quarter PSF datacube computation for OffJAX ([fe0a554](https://github.com/CoreySpohn/yippy/commit/fe0a5548e1441ed648c3b7ddd22e20408102b0ed))
+* GPU support for PSF datacube ([67d5c64](https://github.com/CoreySpohn/yippy/commit/67d5c645d643843766f43577e56f01ddce0bfc46))
+
+
+### Bug Fixes
+
+* Ensure stellar diameters are a flat array ([6842932](https://github.com/CoreySpohn/yippy/commit/6842932b1c2aa05aab8430fea8c75dcb529c4e60))
+
 ## [1.11.2](https://github.com/CoreySpohn/yippy/compare/v1.11.1...v1.11.2) (2025-11-20)
 
 
