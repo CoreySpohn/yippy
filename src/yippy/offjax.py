@@ -4,9 +4,8 @@ from pathlib import Path
 
 import jax.numpy as jnp
 from astropy.units import Quantity
-from jax import device_put, jit, vmap
+from jax import device_put, jit, shard_map, vmap
 from jax.experimental import mesh_utils
-from jax.experimental.shard_map import shard_map
 from jax.sharding import Mesh
 from jax.sharding import PartitionSpec as P
 from lod_unit import lod
