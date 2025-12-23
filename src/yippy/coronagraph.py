@@ -1646,7 +1646,6 @@ class Coronagraph:
         outdict = {
             "pupilDiam": self.header.diameter.to(u.m).value,
             "obscurFac": self.header.obscured,
-            "shapeFac": np.pi / 4,
             "starlightSuppressionSystems": [
                 {
                     "name": self.name,
