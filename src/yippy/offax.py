@@ -2,6 +2,7 @@
 
 from multiprocessing import Pool
 from pathlib import Path
+from typing import Optional, Tuple
 
 import astropy.io.fits as pyfits
 import astropy.units as u
@@ -55,8 +56,29 @@ class OffAx:
         pixel_scale: Quantity,
         x_symmetric: bool,
         y_symmetric: bool,
+        downsample_shape: Optional[Tuple[int, int]] = None,
     ) -> None:
-        """Initializes the OffAx class by loading PSF and offset data from YIP."""
+        """Initializes the OffAx class by loading PSF and offset data from YIP.
+
+        Args:
+            yip_dir:
+                Path to the directory containing PSF and offset data.
+            offax_data_file:
+                Name of the file containing the PSF data.
+            offax_offsets_file:
+                Name of the file containing the offsets data.
+            pixel_scale:
+                Pixel scale of the PSF data in lambda/D.
+            x_symmetric:
+                Whether the PSFs are symmetric in x.
+            y_symmetric:
+                Whether the PSFs are symmetric in y.
+            downsample_shape:
+                Optional target shape (ny, nx) to downsample PSFs to.
+                If provided, all PSFs will be resampled to this shape
+                immediately after loading, conserving total flux.
+                The pixel_scale will be updated accordingly.
+        """
         # Pixel scale in lambda/D
         self.pixel_scale = pixel_scale
 
@@ -86,9 +108,9 @@ class OffAx:
                 # This condition occurs when the offsets is transposed
                 # from the expected format
                 offsets = offsets.T
-        assert len(offsets) == psfs.shape[0], (
-            "Offsets and PSFs do not have the same number of elements"
-        )
+        assert (
+            len(offsets) == psfs.shape[0]
+        ), "Offsets and PSFs do not have the same number of elements"
 
         ########################################################################
         # Determine the format of the input coronagraph files so we can handle #
@@ -156,14 +178,31 @@ class OffAx:
         else:
             logger.info(f"{yip_dir.stem} response is full 2D")
             self.type = "2df"
-        if self.type == "1d":
-            # A lambda/D offset that represents the greatest separation where the PSF's
-            # center is within the image
-            self.max_offset_in_image = psfs.shape[1] / 2 * u.pix * self.pixel_scale
 
-        if self.type == "1d":
-            # A lambda/D offset that represents the greatest separation where the PSF's
-            # center is within the image
+        # A lambda/D offset that represents the greatest separation where the PSF's
+        # center is within the image. This applies to all coronagraph types.
+        self.max_offset_in_image = psfs.shape[1] / 2 * u.pix * self.pixel_scale
+
+        # Downsample PSFs if requested
+        if downsample_shape is not None:
+            original_shape = psfs.shape[1:]
+            logger.info(
+                f"Downsampling PSFs from {original_shape} to {downsample_shape}"
+            )
+            from yippy.transforms import downsample_psfs
+
+            psfs, new_pixscale = downsample_psfs(
+                psfs, self.pixel_scale.value, downsample_shape
+            )
+            # Update pixel scale with the new value (preserving units)
+            self.pixel_scale = new_pixscale * self.pixel_scale.unit
+            logger.info(f"New pixel scale: {self.pixel_scale}")
+
+            # Update center positions for the new PSF shape
+            self.center_x = psfs.shape[2] / 2 * u.pix
+            self.center_y = psfs.shape[1] / 2 * u.pix
+
+            # Update max_offset_in_image after downsampling
             self.max_offset_in_image = psfs.shape[1] / 2 * u.pix * self.pixel_scale
 
         self.flat_psfs = psfs

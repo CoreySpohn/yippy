@@ -60,6 +60,10 @@ class Coronagraph:
         cpu_cores: int = 4,
         platform: str = "cpu",
         use_quarter_psf_datacube: bool = False,
+        downsample_shape: tuple[int, int] | None = None,
+        aperture_radius_lod: float = 0.7,
+        contrast_floor: float | None = None,
+        use_inscribed_diameter: bool = False,
     ):
         """Initialize the Coronagraph object.
 
@@ -103,6 +107,18 @@ class Coronagraph:
                 Whether to compute the PSF datacube in only the first quadrant.
                 This is faster and uses less memory, but may not be accurate for
                 all coronagraphs. Default is False.
+            downsample_shape (tuple[int, int] | None):
+                Optional target shape (ny, nx) to downsample PSFs to. If provided,
+                all PSFs will be resampled to this shape immediately after loading,
+                conserving total flux. The pixel_scale will be updated accordingly.
+                Default is None (no downsampling).
+            aperture_radius_lod (float):
+                Aperture radius in lambda/D for throughput and contrast calculations.
+                Default is 0.7 (AYO typically uses 0.85).
+            contrast_floor (float | None):
+                Minimum contrast value for engineering stability floor.
+                If provided, raw contrast values are floored at this value.
+                Typical AYO value is 1e-10. Default is None (no floor).
         """
         ###################
         # Read input data #
@@ -113,6 +129,11 @@ class Coronagraph:
         logger.info(f"Creating {yip_path.stem} coronagraph")
 
         self.name = yip_path.stem
+
+        # Store performance curve parameters
+        self.aperture_radius_lod = aperture_radius_lod
+        self.contrast_floor = contrast_floor
+
         # Get header and calculate the lambda/D value
         stellar_intens_header = pyfits.getheader(Path(yip_path, stellar_intens_file), 0)
 
@@ -120,6 +141,27 @@ class Coronagraph:
         self.header = HeaderData.from_fits_header(stellar_intens_header)
         self.pixel_scale = self.header.pixscale
         self.frac_obscured = self.header.obscured
+
+        # Optionally use inscribed diameter for λ/D calculations (AYO compatibility)
+        # When enabled, input separations are scaled by D/D_INSC before querying
+        self.use_inscribed_diameter = use_inscribed_diameter
+        self._diameter_ratio = 1.0  # Default: no scaling
+        if use_inscribed_diameter:
+            if (
+                self.header.diameter_inscribed is not None
+                and self.header.diameter is not None
+            ):
+                self._diameter_ratio = float(
+                    self.header.diameter / self.header.diameter_inscribed
+                )
+                logger.info(
+                    f"Using inscribed diameter: separations scaled by "
+                    f"{self._diameter_ratio:.4f}"
+                )
+            else:
+                logger.warning(
+                    "use_inscribed_diameter=True but D_INSC not found in header"
+                )
 
         # Stellar intensity of the star being observed as function of stellar
         # angular diameter (unitless)
@@ -145,6 +187,7 @@ class Coronagraph:
                 y_symmetric,
                 cpu_cores,
                 platform,
+                downsample_shape=downsample_shape,
             )
         else:
             self.offax = OffAx(
@@ -154,7 +197,12 @@ class Coronagraph:
                 self.pixel_scale,
                 x_symmetric,
                 y_symmetric,
+                downsample_shape=downsample_shape,
             )
+
+        # Update pixel_scale if downsampling was applied
+        if downsample_shape is not None:
+            self.pixel_scale = self.offax.pixel_scale
 
         # Get the sky_trans mask
         self.sky_trans = SkyTrans(yip_path, sky_trans_file)
@@ -170,7 +218,8 @@ class Coronagraph:
         self.use_quarter_psf_datacube = use_quarter_psf_datacube
 
         # Shape of the images in the PSFs
-        self.psf_shape = np.array([self.header.naxis1, self.header.naxis2])
+        # Use actual PSF shape from offax (accounts for downsampling)
+        self.psf_shape = np.array(self.offax.psf_shape)
         assert self.psf_shape[0] == self.psf_shape[1], "PSF must be square"
         self.npixels = self.psf_shape[0]
 
@@ -178,31 +227,30 @@ class Coronagraph:
         performance_file = f"{performance_file}_v{__version__}.fits"
 
         # Get the contrast and throughput
-        if self.offax.type == "1d":
-            perf_path = Path(self.yip_path, performance_file)
-            if perf_path.exists():
-                # Performance file exists - load it
-                logger.info(f"Loading performance metrics from {performance_file}")
-                self.compute_all_performance_curves(
-                    aperture_radius_lod=0.7,
-                    save_to_fits=False,
-                    load_from_file=performance_file,
-                    plot=False,
-                )
-            else:
-                # No performance file - compute all metrics
-                logger.info(
-                    "No precomputed performance file found. "
-                    "Computing all performance metrics..."
-                )
-                self.compute_all_performance_curves(
-                    aperture_radius_lod=0.7,
-                    save_to_fits=True,
-                    performance_file=performance_file,
-                    plot=False,
-                )
+        # Performance curves work for both 1D and 2D coronagraphs since we
+        # only use PSFs along the x-axis (where y=0)
+        perf_path = Path(self.yip_path, performance_file)
+        if perf_path.exists():
+            # Performance file exists - load it
+            logger.info(f"Loading performance metrics from {performance_file}")
+            self.compute_all_performance_curves(
+                aperture_radius_lod=self.aperture_radius_lod,
+                save_to_fits=False,
+                load_from_file=performance_file,
+                plot=False,
+            )
         else:
-            logger.warning("2d contrast/throughput not supported currently")
+            # No performance file - compute all metrics
+            logger.info(
+                "No precomputed performance file found. "
+                "Computing all performance metrics..."
+            )
+            self.compute_all_performance_curves(
+                aperture_radius_lod=self.aperture_radius_lod,
+                save_to_fits=True,
+                performance_file=performance_file,
+                plot=False,
+            )
 
         logger.info(f"Created {yip_path.stem}")
 
@@ -493,9 +541,15 @@ class Coronagraph:
                 logger.info(
                     f"Successfully loaded performance data from {load_from_file}"
                 )
+                # Apply contrast floor if specified (engineering stability limit)
+                if self.contrast_floor is not None:
+                    raw_contrast = np.maximum(np.abs(raw_contrast), self.contrast_floor)
+                    logger.info(f"Applied contrast floor of {self.contrast_floor:.1e}")
                 # Create splines for throughput and contrast
+                # Use log-space for contrast to handle large dynamic range
                 self.throughput_interp = make_interp_spline(sep, throughput, k=3)
-                self.raw_contrast_interp = make_interp_spline(sep, raw_contrast, k=3)
+                log_contrast = np.log10(np.abs(raw_contrast) + 1e-20)
+                self._log_contrast_interp = make_interp_spline(sep, log_contrast, k=3)
             except Exception as e:
                 logger.warning(f"Error loading from {load_from_file}: {e}")
                 logger.info("Computing throughput and contrast from scratch")
@@ -520,9 +574,16 @@ class Coronagraph:
             raw_contrast = metrics["raw_contrast"]
             core_area = metrics["core_area"]
 
+            # Apply contrast floor if specified (engineering stability limit)
+            if self.contrast_floor is not None:
+                raw_contrast = np.maximum(np.abs(raw_contrast), self.contrast_floor)
+                logger.info(f"Applied contrast floor of {self.contrast_floor:.1e}")
+
             # Create splines for throughput and contrast
+            # Use log-space for contrast to handle large dynamic range
             self.throughput_interp = make_interp_spline(sep, throughput, k=3)
-            self.raw_contrast_interp = make_interp_spline(sep, raw_contrast, k=3)
+            log_contrast = np.log10(np.abs(raw_contrast) + 1e-20)
+            self._log_contrast_interp = make_interp_spline(sep, log_contrast, k=3)
 
             # Save to FITS if requested
             if save_to_fits:
@@ -569,19 +630,30 @@ class Coronagraph:
         self.core_intensity_dict = core_intensities
 
         # Compute Inner Working Angle
+        # Find separation where throughput reaches half of maximum
         valid_mask = throughput > 0
         half_max_throughput = max(throughput[valid_mask]) / 2
-        _closest_ind = np.searchsorted(throughput[valid_mask], half_max_throughput)
-        # Map that to the full throughput array
-        closest_ind = np.where(throughput == throughput[valid_mask][_closest_ind])[0]
 
         def iwa_func(x):
             return self.throughput_interp(x) - half_max_throughput
 
-        self.IWA = (
-            root_scalar(iwa_func, bracket=[sep[closest_ind - 1], sep[closest_ind]]).root
-            * lod
-        )
+        # Find bracket by searching for sign change
+        # Start from the beginning and find where throughput crosses half-max
+        iwa_bracket = None
+        for i in range(1, len(sep)):
+            if iwa_func(sep[i - 1]) * iwa_func(sep[i]) < 0:
+                iwa_bracket = [sep[i - 1], sep[i]]
+                break
+
+        if iwa_bracket is not None:
+            self.IWA = root_scalar(iwa_func, bracket=iwa_bracket).root * lod
+        else:
+            # Fallback: use first separation with significant throughput
+            first_valid_idx = np.argmax(valid_mask)
+            self.IWA = sep[first_valid_idx] * lod
+            logger.warning(
+                f"Could not find IWA bracket, using first valid sep: {self.IWA}"
+            )
 
         # Compute OWA using max_offset_in_image as the physical limit
         if hasattr(self.offax, "max_offset_in_image"):
@@ -655,8 +727,10 @@ class Coronagraph:
     ):
         """Compute throughput, contrast, and core area metrics in a single pass.
 
-        This internal method processes all off-axis PSF positions once, computing
-        multiple metrics at each position to avoid redundant calculations.
+        This internal method processes off-axis PSF positions along the x-axis
+        (where y=0), computing multiple metrics at each position. Performance
+        curves are typically calculated using PSFs along one axis only, which
+        simplifies computation and works for both 1D and 2D coronagraphs.
 
         Args:
             stellar_diam (Quantity):
@@ -702,139 +776,152 @@ class Coronagraph:
         contrasts = []
         core_areas = []
 
-        # Loop through all provided offsets
+        # Find the y index for y_offset = 0 (or closest to 0)
+        # Performance curves are calculated using PSFs along one axis (x-axis, y=0)
+        y_offsets = np.array(self.offax.y_offsets)
+        y_idx = int(np.argmin(np.abs(y_offsets)))
+        y_lod_val = y_offsets[y_idx]
+
+        if y_lod_val != 0:
+            logger.warning(
+                f"No PSF at y=0, using closest y offset: {y_lod_val:.3f} λ/D"
+            )
+
+        # Get max separation for filtering
+        max_sep = None
+        if hasattr(self.offax, "max_offset_in_image"):
+            max_sep = self.offax.max_offset_in_image.to(u.lod).value
+
+        # Loop through x offsets only (with fixed y=0)
         for i, x_lod_val in enumerate(np.array(self.offax.x_offsets)):
-            for j, y_lod_val in enumerate(np.array(self.offax.y_offsets)):
-                # Calculate radial separation
-                r = np.sqrt(x_lod_val**2 + y_lod_val**2)
+            # Use absolute value for separation (radial distance from center)
+            r = abs(x_lod_val)
 
-                # Skip separations that exceed the maximum offset where PSF is
-                # within image
-                if hasattr(self.offax, "max_offset_in_image"):
-                    max_sep = self.offax.max_offset_in_image.to(u.lod).value
-                    if r > max_sep:
-                        logger.debug(
-                            f"Skipping separation {r:.2f} λ/D "
-                            f"(exceeds max_offset_in_image {max_sep:.2f} λ/D)"
-                        )
-                        continue
+            # Skip separations that exceed the maximum offset where PSF is
+            # within image
+            if max_sep is not None and r > max_sep:
+                logger.debug(
+                    f"Skipping separation {r:.2f} λ/D "
+                    f"(exceeds max_offset_in_image {max_sep:.2f} λ/D)"
+                )
+                continue
 
-                # Get planet PSF using the index mapping
-                planet_psf = self.offax.get_psf_by_offset_idx(i, j)
-                if planet_psf is None:
-                    # No PSF exists at this (x, y) combination (sparse grid)
-                    continue
+            # Get planet PSF using the index mapping
+            planet_psf = self.offax.get_psf_by_offset_idx(i, y_idx)
+            if planet_psf is None:
+                # No PSF exists at this (x, y) combination
+                continue
 
-                # Pixel coordinates are needed for all computations
-                px = convert_to_pix(
-                    x_lod_val, self.offax.center_x, self.pixel_scale
-                ).value.astype(int)
-                py = convert_to_pix(
-                    y_lod_val, self.offax.center_y, self.pixel_scale
-                ).value.astype(int)
+            # Pixel coordinates are needed for all computations
+            px = convert_to_pix(
+                x_lod_val, self.offax.center_x, self.pixel_scale
+            ).value.astype(int)
+            py = convert_to_pix(
+                y_lod_val, self.offax.center_y, self.pixel_scale
+            ).value.astype(int)
 
-                # Aperture radius in pixel units
-                radius_pix = aperture_radius_lod / self.pixel_scale.value
+            # Aperture radius in pixel units
+            radius_pix = aperture_radius_lod / self.pixel_scale.value
 
-                # Calculate throughput and contrast (both need same PSF extraction)
-                if compute_throughput or compute_contrast:
-                    # Extract & oversample for throughput/contrast
-                    subarr_oversamp_p, px_os, py_os, radius_os, subarr_orig_p = (
+            # Calculate throughput and contrast (both need same PSF extraction)
+            if compute_throughput or compute_contrast:
+                # Extract & oversample for throughput/contrast
+                subarr_oversamp_p, px_os, py_os, radius_os, subarr_orig_p = (
+                    extract_and_oversample_subarray(
+                        planet_psf, px, py, radius_pix, oversample
+                    )
+                )
+
+                # Measure planet flux in aperture (used for both throughput
+                # and contrast)
+                planet_flux_in_ap = measure_flux_in_oversampled_aperture(
+                    subarr_oversamp_p, px_os, py_os, radius_os, subarr_orig_p
+                )
+
+                # Throughput = planet flux in aperture (PSFs are normalized
+                # to sum to 1)
+                if compute_throughput:
+                    throughput = planet_flux_in_ap
+                    throughputs.append(throughput)
+
+                # Calculate contrast using star flux in same aperture
+                if compute_contrast:
+                    subarr_oversamp_s, sx_os, sy_os, radius_os_s, subarr_orig_s = (
                         extract_and_oversample_subarray(
-                            planet_psf, px, py, radius_pix, oversample
+                            star_psf, px, py, radius_pix, oversample
+                        )
+                    )
+                    star_flux_in_ap = measure_flux_in_oversampled_aperture(
+                        subarr_oversamp_s, sx_os, sy_os, radius_os_s, subarr_orig_s
+                    )
+
+                    # Contrast = star flux / planet flux
+                    contrast_val = (
+                        star_flux_in_ap / planet_flux_in_ap
+                        if star_flux_in_ap > 0
+                        else 0
+                    )
+                    contrasts.append(contrast_val)
+
+            # Calculate core area
+            if compute_core_area:
+                if fit_gaussian_for_core_area:
+                    # Extract a larger subarray for Gaussian fitting
+                    subarr_oversamp_g, px_os_g, py_os_g, _, _ = (
+                        extract_and_oversample_subarray(
+                            planet_psf,
+                            px,
+                            py,
+                            aperture_radius_lod / self.pixel_scale.value * 3,
+                            oversample,
                         )
                     )
 
-                    # Measure planet flux in aperture (used for both throughput
-                    # and contrast)
-                    planet_flux_in_ap = measure_flux_in_oversampled_aperture(
-                        subarr_oversamp_p, px_os, py_os, radius_os, subarr_orig_p
+                    # Create coordinate grids
+                    y_grid, x_grid = np.indices(subarr_oversamp_g.shape)
+
+                    # Compute initial guess for Gaussian parameters
+                    amplitude = subarr_oversamp_g.max()
+                    x0, y0 = px_os_g, py_os_g
+                    sigma_x = sigma_y = 1.0 * oversample
+                    initial_guess = [amplitude, x0, y0, sigma_x, sigma_y]
+
+                    # Fit 2D Gaussian
+                    popt, _ = curve_fit(
+                        gaussian_2d,
+                        (x_grid, y_grid),
+                        subarr_oversamp_g.ravel(),
+                        p0=initial_guess,
                     )
 
-                    # Throughput = planet flux in aperture (PSFs are normalized
-                    # to sum to 1)
-                    if compute_throughput:
-                        throughput = planet_flux_in_ap
-                        throughputs.append(throughput)
+                    # Extract sigma values (standard deviations of the
+                    # Gaussian fit)
+                    _, _, _, sigma_x, sigma_y = popt
 
-                    # Calculate contrast using star flux in same aperture
-                    if compute_contrast:
-                        subarr_oversamp_s, sx_os, sy_os, radius_os_s, subarr_orig_s = (
-                            extract_and_oversample_subarray(
-                                star_psf, px, py, radius_pix, oversample
-                            )
-                        )
-                        star_flux_in_ap = measure_flux_in_oversampled_aperture(
-                            subarr_oversamp_s, sx_os, sy_os, radius_os_s, subarr_orig_s
-                        )
+                    # Convert from pixel units to lambda/D
+                    sigma_x_lod = sigma_x / oversample * self.pixel_scale.value
+                    sigma_y_lod = sigma_y / oversample * self.pixel_scale.value
 
-                        # Contrast = star flux / planet flux
-                        contrast_val = (
-                            star_flux_in_ap / planet_flux_in_ap
-                            if star_flux_in_ap > 0
-                            else 0
-                        )
-                        contrasts.append(contrast_val)
+                    # Compute core area from Gaussian parameters (pi *
+                    # FWHM_x * FWHM_y / 4)
+                    # FWHM = 2.355 * sigma for a Gaussian
+                    fwhm_x = 2.355 * sigma_x_lod
+                    fwhm_y = 2.355 * sigma_y_lod
+                    core_area = np.pi * fwhm_x * fwhm_y / 4
 
-                # Calculate core area
-                if compute_core_area:
-                    if fit_gaussian_for_core_area:
-                        # Extract a larger subarray for Gaussian fitting
-                        subarr_oversamp_g, px_os_g, py_os_g, _, _ = (
-                            extract_and_oversample_subarray(
-                                planet_psf,
-                                px,
-                                py,
-                                aperture_radius_lod / self.pixel_scale.value * 3,
-                                oversample,
-                            )
-                        )
+                    # Apply minimum area if requested
+                    if use_phot_aperture_as_min:
+                        min_area = np.pi * aperture_radius_lod**2
+                        core_area = max(core_area, min_area)
+                else:
+                    # Fixed core area based on aperture radius
+                    core_area = np.pi * aperture_radius_lod**2
 
-                        # Create coordinate grids
-                        y_grid, x_grid = np.indices(subarr_oversamp_g.shape)
+                # Add to results
+                core_areas.append(core_area)
 
-                        # Compute initial guess for Gaussian parameters
-                        amplitude = subarr_oversamp_g.max()
-                        x0, y0 = px_os_g, py_os_g
-                        sigma_x = sigma_y = 1.0 * oversample
-                        initial_guess = [amplitude, x0, y0, sigma_x, sigma_y]
-
-                        # Fit 2D Gaussian
-                        popt, _ = curve_fit(
-                            gaussian_2d,
-                            (x_grid, y_grid),
-                            subarr_oversamp_g.ravel(),
-                            p0=initial_guess,
-                        )
-
-                        # Extract sigma values (standard deviations of the
-                        # Gaussian fit)
-                        _, _, _, sigma_x, sigma_y = popt
-
-                        # Convert from pixel units to lambda/D
-                        sigma_x_lod = sigma_x / oversample * self.pixel_scale.value
-                        sigma_y_lod = sigma_y / oversample * self.pixel_scale.value
-
-                        # Compute core area from Gaussian parameters (pi *
-                        # FWHM_x * FWHM_y / 4)
-                        # FWHM = 2.355 * sigma for a Gaussian
-                        fwhm_x = 2.355 * sigma_x_lod
-                        fwhm_y = 2.355 * sigma_y_lod
-                        core_area = np.pi * fwhm_x * fwhm_y / 4
-
-                        # Apply minimum area if requested
-                        if use_phot_aperture_as_min:
-                            min_area = np.pi * aperture_radius_lod**2
-                            core_area = max(core_area, min_area)
-                    else:
-                        # Fixed core area based on aperture radius
-                        core_area = np.pi * aperture_radius_lod**2
-
-                    # Add to results
-                    core_areas.append(core_area)
-
-                # Store separation for all calculations
-                separations.append(r)
+            # Store separation for all calculations
+            separations.append(r)
 
         # Convert to arrays and sort by separation
         separations = np.array(separations)
@@ -1028,7 +1115,15 @@ class Coronagraph:
             separation_val = separation
 
         # Convert to numpy array to handle both scalar and array inputs consistently
-        return np.atleast_1d(separation_val)
+        sep_array = np.atleast_1d(separation_val)
+
+        # Apply inscribed diameter scaling if enabled
+        # When use_inscribed_diameter=True, input seps are in inscribed λ/D,
+        # so we scale to circumscribed λ/D for querying the internal interpolators
+        if self._diameter_ratio != 1.0:
+            sep_array = sep_array * self._diameter_ratio
+
+        return sep_array
 
     def throughput(self, separation):
         """Return the throughput at the given separation(s).
@@ -1069,7 +1164,62 @@ class Coronagraph:
                 inputs or a numpy array for array-like inputs.
         """
         sep_values = self._convert_separation_to_lod(separation)
-        result = self.raw_contrast_interp(sep_values)
+
+        # Interpolate in log-space to handle large dynamic range
+        log_result = self._log_contrast_interp(sep_values)
+        result = np.power(10.0, log_result)
+
+        # Apply contrast floor after interpolation
+        if self.contrast_floor is not None:
+            result = np.maximum(result, self.contrast_floor)
+
+        # Return a scalar if the input was a scalar
+        if (
+            len(sep_values) == 1
+            and np.isscalar(separation)
+            or (hasattr(separation, "shape") and len(separation.shape) == 0)
+        ):
+            return float(result[0])
+        return result
+
+    def noise_floor(self, separation, contrast_floor=1e-10, ppf=30.0):
+        """Return the engineering noise floor at the given separation(s).
+
+        The noise floor represents the practical stability limit (speckle noise)
+        that cannot be removed. It is computed as:
+            noise_floor = max(|raw_contrast|, contrast_floor) / ppf
+
+        This matches AYO's approach of using an empirical contrast floor rather
+        than the theoretical diffraction limit.
+
+        Args:
+            separation (float, Quantity, or array-like):
+                The separation(s) at which to evaluate the noise floor, in lambda/D.
+                Can be a single value or array-like.
+            contrast_floor (float):
+                Minimum contrast value to use. Default is 1e-10, matching AYO's
+                typical engineering requirement.
+            ppf (float):
+                Post-processing factor (noise reduction from speckle subtraction).
+                Default is 30.0.
+
+        Returns:
+            float or numpy.ndarray:
+                The noise floor at the given separation(s). Returns a float for single
+                inputs or a numpy array for array-like inputs.
+        """
+        sep_values = self._convert_separation_to_lod(separation)
+
+        # Get raw contrast using the method (which handles log-space interpolation)
+        raw = self.raw_contrast(separation)
+        if np.isscalar(raw):
+            raw = np.array([raw])
+
+        # Apply contrast floor (engineering stability limit)
+        contrast = np.maximum(raw, contrast_floor)
+
+        # Divide by PPF to get noise floor
+        result = contrast / ppf
 
         # Return a scalar if the input was a scalar
         if (
@@ -1526,24 +1676,15 @@ class Coronagraph:
                 "Call compute_all_performance_curves() first."
             )
 
-        # Get the separations from the off-axis PSF data
-        separations = []
-        for i, x_lod_val in enumerate(np.array(self.offax.x_offsets)):
-            for j, y_lod_val in enumerate(np.array(self.offax.y_offsets)):
-                r = np.sqrt(x_lod_val**2 + y_lod_val**2)
+        # Get the separations from the off-axis PSF x-offsets
+        # Performance curves use only the x-axis (where y=0)
+        x_offsets = np.array(self.offax.x_offsets)
+        separations = np.abs(x_offsets)
 
-                # Skip separations that exceed the maximum offset where PSF is
-                # within image
-                if hasattr(self.offax, "max_offset_in_image"):
-                    max_sep = self.offax.max_offset_in_image.to(u.lod).value
-                    if r > max_sep:
-                        logger.debug(
-                            f"Skipping separation {r:.2f} λ/D "
-                            f"(exceeds max_offset_in_image {max_sep:.2f} λ/D)"
-                        )
-                        continue
-
-                separations.append(r)
+        # Skip separations that exceed the maximum offset where PSF is within image
+        if hasattr(self.offax, "max_offset_in_image"):
+            max_sep = self.offax.max_offset_in_image.to(u.lod).value
+            separations = separations[separations <= max_sep]
 
         separations = np.sort(np.unique(separations))
 
@@ -1569,16 +1710,28 @@ class Coronagraph:
         raw_contrast = self.raw_contrast_interp(separations)
         core_area = self.core_area_interp(separations)
 
-        # Validate results to ensure no extrapolation artifacts
+        # Clip small negative values from spline interpolation artifacts
+        # Spline interpolation can produce small negative values near zero
+        if np.any(throughput < 0):
+            n_negative = np.sum(throughput < 0)
+            min_val = np.min(throughput)
+            if min_val < -0.01:
+                # Only raise error for significantly negative values
+                raise ValueError(
+                    f"Found {n_negative} negative throughput values. "
+                    f"Min value: {min_val:.6f}"
+                )
+            logger.debug(
+                f"Clipping {n_negative} small negative throughput values "
+                f"(min: {min_val:.6f}) to zero"
+            )
+            throughput = np.clip(throughput, 0, None)
+
+        # Validate throughput doesn't exceed 1
         if np.any(throughput > 1):
             raise ValueError(
                 f"Found {np.sum(throughput > 1)}"
                 f" throughput values > 1. Max value: {np.max(throughput):.3f}"
-            )
-        if np.any(throughput < 0):
-            raise ValueError(
-                f"Found {np.sum(throughput < 0)}"
-                f" negative throughput values. Min value: {np.min(throughput):.3f}"
             )
 
         # Get occulter transmission data
@@ -1686,3 +1839,83 @@ class Coronagraph:
 
         logger.info(f"EXOSIMS specs saved to {specs_file}")
         return outdict
+
+    def dump_ayo_csv(
+        self,
+        output_path,
+        sep_min=0.125,
+        sep_max=32.0,
+        sep_step=0.25,
+        contrast_floor=1e-10,
+        ppf=30.0,
+    ):
+        """Export coronagraph performance curves in AYO-compatible CSV format.
+
+        This generates a CSV file matching the format of AYO's coronagraph
+        output (e.g., coronagraph1_plot-eac1_aavc.csv), useful for comparing
+        yippy performance curves with AYO expectations.
+
+        Args:
+            output_path (str or Path):
+                Path to write the CSV file.
+            sep_min (float):
+                Minimum separation in λ/D. Default is 0.125.
+            sep_max (float):
+                Maximum separation in λ/D. Default is 32.0.
+            sep_step (float):
+                Step size for separations in λ/D. Default is 0.25.
+            contrast_floor (float):
+                Minimum contrast value for noise floor. Default is 1e-10.
+            ppf (float):
+                Post-processing factor for noise floor. Default is 30.0.
+
+        Returns:
+            Path: The path to the saved CSV file.
+
+        Example:
+            >>> coro = Coronagraph(yip_path)
+            >>> coro.dump_ayo_csv("my_coronagraph.csv")
+        """
+        import csv
+
+        output_path = Path(output_path)
+
+        # Generate separations array
+        separations = np.arange(sep_min, sep_max + sep_step / 2, sep_step)
+
+        # Compute all curves at these separations
+        raw_contrast = np.abs(self.raw_contrast(separations))
+        contrast = np.maximum(raw_contrast, contrast_floor)
+        noise_floor = contrast / ppf
+        throughput = self.throughput(separations)
+        occ_trans = self.occulter_transmission(separations)
+
+        # Write CSV in AYO format
+        with open(output_path, "w", newline="") as f:
+            writer = csv.writer(f)
+
+            # Header matching AYO format
+            writer.writerow(
+                [
+                    "Sep (l/D)",
+                    "Contrast (for a point source)",
+                    "Noise floor (point source 1-sigma)",
+                    "Core throughput",
+                    "Skytrans",
+                ]
+            )
+
+            # Data rows
+            for i, sep in enumerate(separations):
+                writer.writerow(
+                    [
+                        f"{sep:.6f}",
+                        f"{contrast[i]:.6e}",
+                        f"{noise_floor[i]:.6e}",
+                        f"{throughput[i]:.6e}",
+                        f"{occ_trans[i]:.6f}",
+                    ]
+                )
+
+        logger.info(f"AYO-format CSV saved to {output_path}")
+        return output_path

@@ -30,6 +30,7 @@ class HeaderData:
     naxis3: int
     design: str
     diameter: Optional[u.Quantity] = None
+    diameter_inscribed: Optional[u.Quantity] = None
     pixscale: Optional[u.Quantity] = None
     lambda0: Optional[u.Quantity] = None
     minlam: Optional[u.Quantity] = None
@@ -170,6 +171,7 @@ class HeaderData:
                 "NAXIS3",
                 "DESIGN",
                 "D",
+                "D_INSC",
                 "PIXSCALE",
                 "LAMBDA",
                 "MINLAM",
@@ -199,6 +201,7 @@ class HeaderData:
             naxis3=int(header.get("NAXIS3", 0)),
             design=header.get("DESIGN", ""),
             diameter=HeaderData.get_header_value(header, "D", u.meter),
+            diameter_inscribed=HeaderData.get_header_value(header, "D_INSC", u.meter),
             pixscale=header.get("PIXSCALE") * lod / u.pix,
             lambda0=HeaderData.get_header_value(header, "LAMBDA", u.micron),
             minlam=HeaderData.get_header_value(header, "MINLAM", u.micron),
