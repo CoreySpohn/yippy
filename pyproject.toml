@@ -11,8 +11,11 @@ dependencies = [
   "scipy",
   "lod_unit",
   "tqdm",
-  "pre-commit>=4.0.1",
   "jax",
+  "equinox",
+  "interpax",
+  "jaxtyping",
+  "pooch",
 ]
 license = { file = "LICENSE" }
 dynamic = ['readme', 'version']

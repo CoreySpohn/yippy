@@ -3,15 +3,12 @@
 __all__ = [
     "__version__",
     "Coronagraph",
+    "EqxCoronagraph",
     "logger",
-    "convert_to_lod",
-    "fft_rotate",
-    "fft_shift",
-    "PerformanceMetric",
 ]
 
 from ._version import __version__
 from .coronagraph import Coronagraph
+from .eqx_coronagraph import EqxCoronagraph
 from .logger import logger
-from .performance_metric import PerformanceMetric
-from .util import convert_to_lod, fft_rotate, fft_shift
+
