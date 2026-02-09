@@ -7,6 +7,7 @@
 ```{toctree}
 :maxdepth: 2
 examples/Basics.ipynb
+examples/PerformanceMetrics.ipynb
 examples/RadiallySymmetric.ipynb
 examples/QuarterSymmetric.ipynb
 examples/StellarIntens.ipynb
