@@ -5,7 +5,7 @@ input packages (YIPs) for testing and documentation.  It uses `pooch` to
 handle data downloads and caching so that users don't need to ship large
 FITS files alongside their code.
 
-Example
+Example:
 -------
 >>> from yippy.datasets import fetch_coronagraph
 >>> yip_path = fetch_coronagraph()

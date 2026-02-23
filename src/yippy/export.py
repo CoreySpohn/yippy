@@ -1,7 +1,7 @@
 """Export coronagraph performance curves to external formats.
 
 Provides functions to export coronagraph performance data in EXOSIMS FITS
-format and AYO-compatible CSV format.
+format and AYO's CSV format.
 
 All functions operate on a Coronagraph instance passed as the first argument.
 """
@@ -58,10 +58,12 @@ def _save_to_exosims_format(
 
     # 1. Occulter transmission
     hdul = pyfits.HDUList(
-        [pyfits.PrimaryHDU(
-            np.vstack((sep_occ_trans, occ_trans)).T,
-            header=base_header.copy(),
-        )]
+        [
+            pyfits.PrimaryHDU(
+                np.vstack((sep_occ_trans, occ_trans)).T,
+                header=base_header.copy(),
+            )
+        ]
     )
     hdul.writeto(exosims_dir / "occ_trans.fits", overwrite=True)
 
@@ -76,19 +78,24 @@ def _save_to_exosims_format(
         thruput_header["PHOTAPER"] = aperture_radius_lod
 
     hdul = pyfits.HDUList(
-        [pyfits.PrimaryHDU(
-            np.vstack((sep, throughput)).T, header=thruput_header,
-        )]
+        [
+            pyfits.PrimaryHDU(
+                np.vstack((sep, throughput)).T,
+                header=thruput_header,
+            )
+        ]
     )
     hdul.writeto(exosims_dir / "core_thruput.fits", overwrite=True)
 
     # 3. Core area (only for Gaussian fitting)
     if fit_gaussian_for_core_area:
         hdul = pyfits.HDUList(
-            [pyfits.PrimaryHDU(
-                np.vstack((sep, core_area)).T,
-                header=thruput_header.copy(),
-            )]
+            [
+                pyfits.PrimaryHDU(
+                    np.vstack((sep, core_area)).T,
+                    header=thruput_header.copy(),
+                )
+            ]
         )
         hdul.writeto(exosims_dir / "core_area.fits", overwrite=True)
     else:
@@ -101,25 +108,30 @@ def _save_to_exosims_format(
     stellar_diams = list(core_intensities.keys())
     for j, diam in enumerate(stellar_diams):
         ci_header[f"DIAM{j:03d}"] = (
-            diam.value, f"Stellar diameter {j} in lambda/D",
+            diam.value,
+            f"Stellar diameter {j} in lambda/D",
         )
     intensity_array = np.zeros((len(stellar_diams), len(sep_core_intensity)))
     for j, diam in enumerate(stellar_diams):
         intensity_array[j] = core_intensities[diam]
     hdul = pyfits.HDUList(
-        [pyfits.PrimaryHDU(
-            np.vstack((sep_core_intensity, intensity_array)).T,
-            header=ci_header,
-        )]
+        [
+            pyfits.PrimaryHDU(
+                np.vstack((sep_core_intensity, intensity_array)).T,
+                header=ci_header,
+            )
+        ]
     )
     hdul.writeto(exosims_dir / "core_mean_intensity.fits", overwrite=True)
 
     # 5. Raw contrast
     hdul = pyfits.HDUList(
-        [pyfits.PrimaryHDU(
-            np.vstack((sep, raw_contrast)).T,
-            header=thruput_header.copy(),
-        )]
+        [
+            pyfits.PrimaryHDU(
+                np.vstack((sep, raw_contrast)).T,
+                header=thruput_header.copy(),
+            )
+        ]
     )
     hdul.writeto(exosims_dir / "raw_contrast.fits", overwrite=True)
 
@@ -190,9 +202,7 @@ def export_exosims(
         throughput = np.clip(throughput, 0, None)
 
     if np.any(throughput > 1):
-        raise ValueError(
-            f"Throughput > 1: max = {np.max(throughput):.3f}"
-        )
+        raise ValueError(f"Throughput > 1: max = {np.max(throughput):.3f}")
 
     # Occulter transmission
     sky_trans_data = coro.sky_trans()
@@ -300,7 +310,7 @@ def export_ayo_csv(
     contrast_floor: float = 1e-10,
     ppf: float = 30.0,
 ) -> Path:
-    """Export performance curves in AYO-compatible CSV format.
+    """Export performance curves in AYO CSV format.
 
     Returns the path to the saved CSV file.
     """
@@ -315,21 +325,25 @@ def export_ayo_csv(
 
     with open(output_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "Sep (l/D)",
-            "Contrast (for a point source)",
-            "Noise floor (point source 1-sigma)",
-            "Core throughput",
-            "Skytrans",
-        ])
+        writer.writerow(
+            [
+                "Sep (l/D)",
+                "Contrast (for a point source)",
+                "Noise floor (point source 1-sigma)",
+                "Core throughput",
+                "Skytrans",
+            ]
+        )
         for i, sep in enumerate(separations):
-            writer.writerow([
-                f"{sep:.6f}",
-                f"{contrast[i]:.6e}",
-                f"{noise_floor[i]:.6e}",
-                f"{throughput[i]:.6e}",
-                f"{occ_trans[i]:.6f}",
-            ])
+            writer.writerow(
+                [
+                    f"{sep:.6f}",
+                    f"{contrast[i]:.6e}",
+                    f"{noise_floor[i]:.6e}",
+                    f"{throughput[i]:.6e}",
+                    f"{occ_trans[i]:.6f}",
+                ]
+            )
 
     logger.info(f"AYO-format CSV saved to {output_path}")
     return output_path
