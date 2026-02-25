@@ -73,7 +73,7 @@ coro = Coronagraph("path/to/yip")
 # Access pre-computed performance curves
 coro.throughput(5.0)
 coro.raw_contrast(5.0)
-coro.noise_floor(5.0)
+coro.noise_floor_exosims(5.0)
 coro.occulter_transmission(5.0)
 coro.core_area(5.0)
 coro.core_mean_intensity(5.0)

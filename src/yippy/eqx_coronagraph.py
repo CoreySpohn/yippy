@@ -107,7 +107,7 @@ class EqxCoronagraph(eqx.Module):
         self,
         yip_path: str | Path | None = None,
         *,
-        yippy_coro: "YippyCoronagraph | None" = None,
+        yippy_coro: YippyCoronagraph | None = None,
         ensure_psf_datacube: bool = False,
         # Forwarded to yippy.Coronagraph when building from yip_path
         use_x64: bool = False,
@@ -213,18 +213,10 @@ class EqxCoronagraph(eqx.Module):
         )
 
         # ── Performance curve interpolators ─────────────────────────────
-        self._throughput_interp = _scipy_to_interpax(
-            yippy_coro.throughput_interp
-        )
-        self._log_contrast_interp = _scipy_to_interpax(
-            yippy_coro._log_contrast_interp
-        )
-        self._occ_trans_interp = _scipy_to_interpax(
-            yippy_coro.occ_trans_interp
-        )
-        self._core_area_interp = _scipy_to_interpax(
-            yippy_coro.core_area_interp
-        )
+        self._throughput_interp = _scipy_to_interpax(yippy_coro.throughput_interp)
+        self._log_contrast_interp = _scipy_to_interpax(yippy_coro._log_contrast_interp)
+        self._occ_trans_interp = _scipy_to_interpax(yippy_coro.occ_trans_interp)
+        self._core_area_interp = _scipy_to_interpax(yippy_coro.core_area_interp)
         self._core_mean_intensity_interp = _scipy_to_interpax(
             yippy_coro.core_intensity_interp
         )
@@ -284,26 +276,44 @@ class EqxCoronagraph(eqx.Module):
             result = jnp.maximum(result, self.contrast_floor)
         return result
 
-    def noise_floor(
+    def noise_floor_exosims(
         self,
         separation_lod: float,
         contrast_floor: float = 1e-10,
         ppf: float = 30.0,
     ) -> Array:
-        """Evaluate engineering noise floor at the given separation.
+        """Noise floor in EXOSIMS contrast convention.
 
         Computed as ``max(|raw_contrast|, contrast_floor) / ppf``.
 
         Args:
-            separation_lod: Separation from the star in λ/D.
+            separation_lod: Separation from the star in lambda/D.
             contrast_floor: Minimum contrast value.
             ppf: Post-processing noise suppression factor.
 
         Returns:
-            Scalar noise floor value.
+            Scalar noise floor value (EXOSIMS convention).
         """
         rc = jnp.abs(self.raw_contrast(separation_lod))
         return jnp.maximum(rc, contrast_floor) / ppf
+
+    def noise_floor_ayo(
+        self,
+        separation_lod: float,
+        ppf: float = 30.0,
+    ) -> Array:
+        """Noise floor in AYO/pyEDITH per-pixel convention.
+
+        Computed as ``core_mean_intensity(sep) / ppf``.
+
+        Args:
+            separation_lod: Separation from the star in lambda/D.
+            ppf: Post-processing noise suppression factor.
+
+        Returns:
+            Scalar noise floor value (AYO/pyEDITH convention).
+        """
+        return self.core_mean_intensity(separation_lod) / ppf
 
     def occulter_transmission(self, separation_lod: float) -> Array:
         """Evaluate occulter transmission at the given separation.
@@ -342,26 +352,27 @@ class EqxCoronagraph(eqx.Module):
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _scipy_to_interpax(scipy_spline) -> interpax.CubicSpline:
+def _scipy_to_interpax(scipy_spline):
     """Convert a ``scipy.interpolate.BSpline`` / ``make_interp_spline`` to interpax.
 
     The scipy spline stores knots (``t``) and coefficients (``c``).  We
     re-evaluate it on its interior knots (the original data x-values) and
-    build a fresh ``interpax.CubicSpline`` from those (x, y) pairs.  This
-    avoids needing to translate B-spline coefficients directly.
+    build a fresh interpax interpolator from those (x, y) pairs.
+
+    For linear splines (k=1) we use ``interpax.Interpolator1D(method='linear')``.
+    For cubic splines (k=3) we use ``interpax.CubicSpline``.
 
     Args:
         scipy_spline: A scipy BSpline or result of ``make_interp_spline``.
 
     Returns:
-        An ``interpax.CubicSpline`` that approximates the same function.
+        An interpax interpolator that approximates the same function.
     """
     import numpy as np
 
     # Extract the unique interior knots (stripping the k+1 padded boundary
-    # knots from each end).  For a cubic (k=3) spline from
-    # ``make_interp_spline`` the interior knots exactly equal the original
-    # x data.
+    # knots from each end).  For make_interp_spline the interior knots
+    # exactly equal the original x data.
     k = scipy_spline.k
     t = scipy_spline.t
     x_np = np.unique(t[k:-k])
@@ -373,4 +384,6 @@ def _scipy_to_interpax(scipy_spline) -> interpax.CubicSpline:
     x_jax = jnp.asarray(x_np, dtype=jnp.float32)
     y_jax = jnp.asarray(y_np, dtype=jnp.float32)
 
+    if k <= 1:
+        return interpax.Interpolator1D(x_jax, y_jax, method="linear", extrap=True)
     return interpax.CubicSpline(x_jax, y_jax)

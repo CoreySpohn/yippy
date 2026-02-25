@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 def _save_to_exosims_format(
-    coro: "Coronagraph",
+    coro: Coronagraph,
     sep,
     throughput,
     raw_contrast,
@@ -147,7 +147,7 @@ def _save_to_exosims_format(
 
 
 def export_exosims(
-    coro: "Coronagraph",
+    coro: Coronagraph,
     aperture_radius_lod: float = 0.7,
     fit_gaussian_for_core_area: bool = False,
     use_phot_aperture_as_min: bool = False,
@@ -216,7 +216,7 @@ def export_exosims(
         if hasattr(coro, "core_intensity_dict")
         else coro.core_mean_intensity_curve(plot=False)[1]
     )
-    first_diam = list(core_intensities.keys())[0]
+    first_diam = next(iter(core_intensities.keys()))
     stellar_psf = coro.stellar_intens(first_diam)
     dims = stellar_psf.shape
     nbins = int(np.floor(np.max(dims) / 2))
@@ -302,7 +302,7 @@ def export_exosims(
 
 
 def export_ayo_csv(
-    coro: "Coronagraph",
+    coro: Coronagraph,
     output_path,
     sep_min: float = 0.125,
     sep_max: float = 32.0,
@@ -319,7 +319,7 @@ def export_ayo_csv(
 
     raw_contrast = np.abs(coro.raw_contrast(separations))
     contrast = np.maximum(raw_contrast, contrast_floor)
-    noise_floor = contrast / ppf
+    noise_floor_val = contrast / ppf
     throughput = coro.throughput(separations)
     occ_trans = coro.occulter_transmission(separations)
 
@@ -339,7 +339,7 @@ def export_ayo_csv(
                 [
                     f"{sep:.6f}",
                     f"{contrast[i]:.6e}",
-                    f"{noise_floor[i]:.6e}",
+                    f"{noise_floor_val[i]:.6e}",
                     f"{throughput[i]:.6e}",
                     f"{occ_trans[i]:.6f}",
                 ]

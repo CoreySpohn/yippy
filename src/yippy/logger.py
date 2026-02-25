@@ -1,6 +1,7 @@
 """Logging module."""
 
 import logging
+from typing import ClassVar
 
 lib_name = "yippy"
 # See https://gist.github.com/fnky/458719343aabd01cfb17a3a4f7296797 for
@@ -28,7 +29,7 @@ class ColorCodes:
 class ColorFormatter(logging.Formatter):
     """Custom formatter to add colors to log messages."""
 
-    COLORS = {
+    COLORS: ClassVar[dict[int, str]] = {
         logging.DEBUG: ColorCodes.BLUE,
         logging.INFO: ColorCodes.GREEN,
         logging.WARNING: ColorCodes.YELLOW,

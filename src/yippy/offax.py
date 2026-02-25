@@ -2,13 +2,13 @@
 
 from multiprocessing import Pool
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 import astropy.io.fits as pyfits
 import astropy.units as u
-import lod_unit  # noqa: F401
 import numpy as np
 from astropy.units import Quantity
+from hwoutils.transforms import downsample_psfs
 from numpy.typing import NDArray
 
 from yippy.util import convert_to_lod, create_shift_mask, fft_shift
@@ -56,7 +56,7 @@ class OffAx:
         pixel_scale: Quantity,
         x_symmetric: bool,
         y_symmetric: bool,
-        downsample_shape: Optional[Tuple[int, int]] = None,
+        downsample_shape: Optional[tuple[int, int]] = None,
     ) -> None:
         """Initializes the OffAx class by loading PSF and offset data from YIP.
 
@@ -108,9 +108,9 @@ class OffAx:
                 # This condition occurs when the offsets is transposed
                 # from the expected format
                 offsets = offsets.T
-        assert (
-            len(offsets) == psfs.shape[0]
-        ), "Offsets and PSFs do not have the same number of elements"
+        assert len(offsets) == psfs.shape[0], (
+            "Offsets and PSFs do not have the same number of elements"
+        )
 
         ########################################################################
         # Determine the format of the input coronagraph files so we can handle #
@@ -129,11 +129,9 @@ class OffAx:
             offsets_x, offsets_y = (offsets_y, offsets_x)
             offsets = np.vstack((offsets_y, offsets_x)).T
             raise NotImplementedError(
-                (
-                    "Verify that the PSFs are correct for this case!"
-                    " I don't have a test file for this case yet but I think they"
-                    " probably need to be rotated by 90 degrees."
-                )
+                "Verify that the PSFs are correct for this case!"
+                " I don't have a test file for this case yet but I think they"
+                " probably need to be rotated by 90 degrees."
             )
         elif len(offsets_y) == 1:
             logger.info(f"{yip_dir.stem} is radially symmetric")
@@ -189,8 +187,6 @@ class OffAx:
             logger.info(
                 f"Downsampling PSFs from {original_shape} to {downsample_shape}"
             )
-            from yippy.transforms import downsample_psfs
-
             psfs, new_pixscale = downsample_psfs(
                 psfs, self.pixel_scale.value, downsample_shape
             )

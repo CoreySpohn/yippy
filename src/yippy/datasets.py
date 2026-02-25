@@ -26,7 +26,7 @@ REGISTRY: dict[str, str] = {
     "coronagraphs.zip": "md5:1537f41c20cb10170537a7d4e89f64b2",
 }
 
-# Pooch instance – downloads are cached in the OS-specific user cache dir.
+# Pooch instance - downloads are cached in the OS-specific user cache dir.
 # The base_url points at yippy's ``data/`` directory on GitHub.
 PIKACHU = pooch.create(
     path=pooch.os_cache("yippy"),

@@ -7,21 +7,20 @@ import astropy.units as u
 import jax
 import jax.numpy as jnp
 import numpy as np
+from hwoutils import enable_x64, set_host_device_count, set_platform
 from lod_unit import lod
 from tqdm import tqdm
 
 from ._version import __version__
+from .export import export_ayo_csv
 from .header import HeaderData
-from .jax_funcs import (
-    enable_x64,
-    set_host_device_count,
-    set_platform,
-)
 from .logger import logger
 from .offax import OffAx
 from .offjax import OffJAX
 from .performance import (
     compute_all_performance_curves as _compute_all_perf,
+)
+from .performance import (
     compute_core_area_curve,
     compute_core_mean_intensity_curve,
     compute_occ_trans_curve,
@@ -64,6 +63,8 @@ class Coronagraph:
         aperture_radius_lod: float = 0.7,
         contrast_floor: float | None = None,
         use_inscribed_diameter: bool = False,
+        psf_trunc_ratio: float | None = None,
+        interp_order: int = 1,
     ):
         """Initialize the Coronagraph object.
 
@@ -119,6 +120,19 @@ class Coronagraph:
                 Minimum contrast value for engineering stability floor.
                 If provided, raw contrast values are floored at this value.
                 Typical AYO value is 1e-10. Default is None (no floor).
+            use_inscribed_diameter (bool):
+                Whether to use the inscribed diameter for λ/D calculations.
+                When True, input separations are scaled by D/D_INSC to
+                convert from inscribed to circumscribed units. Default False.
+            psf_trunc_ratio (float | None):
+                PSF truncation ratio for throughput and core area computation.
+                When set, pixels above ``ratio * peak`` define the aperture
+                (matching AYO's ``photap_frac`` / ``omega_lod``).
+                When None, a fixed circular aperture is used instead.
+                Typical AYO value is 0.3. Default is None.
+            interp_order (int):
+                B-spline order for performance-curve interpolators.
+                Use 1 for linear (default) or 3 for cubic.
         """
         ###################
         # Read input data #
@@ -133,6 +147,7 @@ class Coronagraph:
         # Store performance curve parameters
         self.aperture_radius_lod = aperture_radius_lod
         self.contrast_floor = contrast_floor
+        self.psf_trunc_ratio = psf_trunc_ratio
 
         # Get header and calculate the lambda/D value
         stellar_intens_header = pyfits.getheader(Path(yip_path, stellar_intens_file), 0)
@@ -230,26 +245,35 @@ class Coronagraph:
         # Performance curves work for both 1D and 2D coronagraphs since we
         # only use PSFs along the x-axis (where y=0)
         perf_path = Path(self.yip_path, performance_file)
-        if perf_path.exists():
-            # Performance file exists - load it
+        if perf_path.exists() and self.psf_trunc_ratio is None:
+            # Performance file exists and no custom truncation ratio - load it
             logger.info(f"Loading performance metrics from {performance_file}")
             self.compute_all_performance_curves(
                 aperture_radius_lod=self.aperture_radius_lod,
                 save_to_fits=False,
                 load_from_file=performance_file,
                 plot=False,
+                interp_order=interp_order,
             )
         else:
-            # No performance file - compute all metrics
-            logger.info(
-                "No precomputed performance file found. "
-                "Computing all performance metrics..."
-            )
+            # Either no performance file or custom truncation ratio - compute
+            if self.psf_trunc_ratio is not None:
+                logger.info(
+                    f"Computing performance with PSF trunc ratio "
+                    f"= {self.psf_trunc_ratio}..."
+                )
+            else:
+                logger.info(
+                    "No precomputed performance file found. "
+                    "Computing all performance metrics..."
+                )
             self.compute_all_performance_curves(
                 aperture_radius_lod=self.aperture_radius_lod,
-                save_to_fits=True,
+                save_to_fits=self.psf_trunc_ratio is None,
                 performance_file=performance_file,
                 plot=False,
+                psf_trunc_ratio=self.psf_trunc_ratio,
+                interp_order=interp_order,
             )
 
         logger.info(f"Created {yip_path.stem}")
@@ -424,6 +448,8 @@ class Coronagraph:
         performance_file="coro_perf.fits",
         load_from_file=None,
         plot=False,
+        psf_trunc_ratio=None,
+        interp_order=1,
     ):
         """Compute all coronagraph performance curves at once.
 
@@ -440,6 +466,8 @@ class Coronagraph:
             performance_file=performance_file,
             load_from_file=load_from_file,
             plot=plot,
+            psf_trunc_ratio=psf_trunc_ratio,
+            interp_order=interp_order,
         )
 
     def _compute_performance_metrics(
@@ -495,9 +523,11 @@ class Coronagraph:
         sep, occ = compute_occ_trans_curve(self)
         if plot:
             self._plot_performance_curve(
-                sep, occ,
+                sep,
+                occ,
                 title=f"{self.name} Occulter Transmission",
-                xlabel="Separation [λ/D]", ylabel="Occulter Transmission",
+                xlabel="Separation [λ/D]",
+                ylabel="Occulter Transmission",
             )
         return sep, occ
 
@@ -507,7 +537,8 @@ class Coronagraph:
         Delegates to :func:`yippy.performance.compute_core_mean_intensity_curve`.
         """
         sep, intensities = compute_core_mean_intensity_curve(
-            self, stellar_diam_values=stellar_diam_values,
+            self,
+            stellar_diam_values=stellar_diam_values,
         )
         if plot:
             import matplotlib.pyplot as plt
@@ -560,10 +591,8 @@ class Coronagraph:
 
     def _is_scalar_input(self, sep_values, separation):
         """Check if the original input was scalar."""
-        return (
-            len(sep_values) == 1
-            and np.isscalar(separation)
-            or (hasattr(separation, "shape") and len(separation.shape) == 0)
+        return (len(sep_values) == 1 and np.isscalar(separation)) or (
+            hasattr(separation, "shape") and len(separation.shape) == 0
         )
 
     def throughput(self, separation):
@@ -599,11 +628,14 @@ class Coronagraph:
             return float(result[0])
         return result
 
-    def noise_floor(self, separation, contrast_floor=1e-10, ppf=30.0):
-        """Return the engineering noise floor at the given separation(s).
+    def noise_floor_exosims(self, separation, contrast_floor=1e-10, ppf=30.0):
+        """Return the noise floor in EXOSIMS contrast convention.
 
-        The noise floor represents the practical stability limit (speckle noise)
-        that cannot be removed:  ``noise_floor = max(|raw_contrast|, floor) / ppf``
+        Computes ``max(|raw_contrast|, floor) / ppf``.  The result is in
+        contrast-normalized units (per-aperture, divided by throughput).
+        EXOSIMS multiplies this by core_thruput to recover C_sr.
+
+        See :doc:`/noise_floor_conventions` for details.
 
         Args:
             separation: Separation(s) in lambda/D.
@@ -611,7 +643,7 @@ class Coronagraph:
             ppf (float): Post-processing factor. Default is 30.0.
 
         Returns:
-            float or numpy.ndarray: The noise floor value(s).
+            float or numpy.ndarray: Noise floor in EXOSIMS convention.
         """
         sep_values = self._convert_separation_to_lod(separation)
         raw = self.raw_contrast(separation)
@@ -622,6 +654,27 @@ class Coronagraph:
         if self._is_scalar_input(sep_values, separation):
             return float(result[0])
         return result
+
+    def noise_floor_ayo(self, separation, ppf=30.0):
+        """Return the noise floor in AYO/pyEDITH per-pixel convention.
+
+        Computes ``core_mean_intensity(sep) / ppf``.  The result is in
+        per-pixel intensity units.  AYO and pyEDITH multiply this by
+        ``omega / pixscale**2`` to get the per-aperture noise.
+
+        See :doc:`/noise_floor_conventions` for details.
+
+        Args:
+            separation: Separation(s) in lambda/D.
+            ppf (float): Post-processing factor. Default is 30.0.
+
+        Returns:
+            float or numpy.ndarray: Noise floor in AYO/pyEDITH convention.
+        """
+        intensity = self.core_mean_intensity(separation)
+        if np.isscalar(intensity):
+            return intensity / ppf
+        return np.asarray(intensity) / ppf
 
     def occulter_transmission(self, separation):
         """Return the occulter transmission at the given separation(s).
@@ -674,6 +727,113 @@ class Coronagraph:
         return result
 
     # ------------------------------------------------------------------
+    # 2D map projections
+    # ------------------------------------------------------------------
+
+    def separation_map(self):
+        """Pixel-grid separations from the coronagraph center in lam/D.
+
+        Returns:
+            numpy.ndarray: (npix, npix) array of separations.
+        """
+        npix = self.npixels
+        cx = self.header.xcenter
+        cy = self.header.ycenter
+        y, x = np.mgrid[:npix, :npix]
+        r_pix = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+        return r_pix * self.pixel_scale.value
+
+    def core_mean_intensity_map(self, stellar_diam=0.0 * lod):
+        """Azimuthally averaged stellar intensity projected onto the pixel grid.
+
+        Equivalent to computing a radial profile of stellar_intens, fitting a
+        1D interpolator, and evaluating it at every pixel's separation. This
+        replaces the rotate-and-average approach with a faster, artifact-free
+        result.
+
+        See :doc:`/azimuthal_averaging` for the comparison.
+
+        Args:
+            stellar_diam: Stellar angular diameter. Default 0.0 lam/D.
+
+        Returns:
+            numpy.ndarray: (npix, npix) core mean intensity values.
+        """
+        r = self.separation_map()
+        return np.asarray(self.core_mean_intensity(r.ravel(), stellar_diam)).reshape(
+            r.shape
+        )
+
+    def noise_floor_ayo_map(self, ppf=30.0, stellar_diam=0.0 * lod):
+        """Noise floor in AYO/pyEDITH per-pixel convention on the pixel grid.
+
+        Computes ``core_mean_intensity_map / ppf``.
+
+        Args:
+            ppf (float): Post-processing factor. Default 30.0.
+            stellar_diam: Stellar angular diameter. Default 0.0 lam/D.
+
+        Returns:
+            numpy.ndarray: (npix, npix) noise floor values.
+        """
+        return self.core_mean_intensity_map(stellar_diam) / ppf
+
+    def throughput_map(self, psf_trunc_ratios=None):
+        """Throughput projected from the 1D curve onto the pixel grid.
+
+        Args:
+            psf_trunc_ratios (array-like or None):
+                If provided, returns a stacked (npix, npix, nratios) array
+                with one slice per truncation ratio. Each ratio triggers a
+                fresh performance computation. If None, uses the current
+                throughput interpolator.
+
+        Returns:
+            numpy.ndarray: (npix, npix) or (npix, npix, nratios) throughput.
+        """
+        r = self.separation_map()
+        r_flat = r.ravel()
+        if psf_trunc_ratios is None:
+            return np.asarray(self.throughput_interp(r_flat)).reshape(r.shape)
+        maps = []
+        for ratio in psf_trunc_ratios:
+            temp = Coronagraph(
+                self.yip_path,
+                psf_trunc_ratio=ratio,
+                use_jax=self.use_jax,
+                interp_order=1,
+            )
+            maps.append(np.asarray(temp.throughput_interp(r_flat)).reshape(r.shape))
+        return np.stack(maps, axis=-1)
+
+    def core_area_map(self, psf_trunc_ratios=None):
+        """Core area (omega) projected from the 1D curve onto the pixel grid.
+
+        Args:
+            psf_trunc_ratios (array-like or None):
+                If provided, returns a stacked (npix, npix, nratios) array.
+                If None, uses the current core_area interpolator.
+
+        Returns:
+            numpy.ndarray: (npix, npix) or (npix, npix, nratios) core area
+                in (lam/D)^2.
+        """
+        r = self.separation_map()
+        r_flat = r.ravel()
+        if psf_trunc_ratios is None:
+            return np.asarray(self.core_area_interp(r_flat)).reshape(r.shape)
+        maps = []
+        for ratio in psf_trunc_ratios:
+            temp = Coronagraph(
+                self.yip_path,
+                psf_trunc_ratio=ratio,
+                use_jax=self.use_jax,
+                interp_order=1,
+            )
+            maps.append(np.asarray(temp.core_area_interp(r_flat)).reshape(r.shape))
+        return np.stack(maps, axis=-1)
+
+    # ------------------------------------------------------------------
     # Standalone curve methods (for plotting individual curves)
     # ------------------------------------------------------------------
 
@@ -683,13 +843,18 @@ class Coronagraph:
         Delegates to :func:`yippy.performance.compute_throughput_curve`.
         """
         sep, vals = compute_throughput_curve(
-            self, aperture_radius_lod=aperture_radius_lod, oversample=oversample,
+            self,
+            aperture_radius_lod=aperture_radius_lod,
+            oversample=oversample,
         )
         if plot:
             self._plot_performance_curve(
-                sep, vals,
+                sep,
+                vals,
                 title=f"{self.name} Throughput",
-                xlabel="Separation [λ/D]", ylabel="Throughput", ms=6,
+                xlabel="Separation [λ/D]",
+                ylabel="Throughput",
+                ms=6,
             )
         return sep, vals
 
@@ -701,14 +866,18 @@ class Coronagraph:
         Delegates to :func:`yippy.performance.compute_raw_contrast_curve`.
         """
         sep, vals = compute_raw_contrast_curve(
-            self, stellar_diam=stellar_diam,
-            aperture_radius_lod=aperture_radius_lod, oversample=oversample,
+            self,
+            stellar_diam=stellar_diam,
+            aperture_radius_lod=aperture_radius_lod,
+            oversample=oversample,
         )
         if plot:
             self._plot_performance_curve(
-                sep, vals,
+                sep,
+                vals,
                 title=f"{self.name} Raw Contrast",
-                xlabel="Separation [λ/D]", ylabel="Raw Contrast",
+                xlabel="Separation [λ/D]",
+                ylabel="Raw Contrast",
                 log_scale=True,
             )
         return sep, vals
@@ -726,7 +895,8 @@ class Coronagraph:
         Delegates to :func:`yippy.performance.compute_core_area_curve`.
         """
         sep, vals = compute_core_area_curve(
-            self, aperture_radius_lod=aperture_radius_lod,
+            self,
+            aperture_radius_lod=aperture_radius_lod,
             fit_gaussian=fit_gaussian,
             use_phot_aperture_as_min=use_phot_aperture_as_min,
             oversample=oversample,
@@ -734,9 +904,11 @@ class Coronagraph:
         if plot:
             suffix = " (Gaussian fit)" if fit_gaussian else " (fixed aperture)"
             self._plot_performance_curve(
-                sep, vals,
+                sep,
+                vals,
                 title=f"{self.name} Core Area{suffix}",
-                xlabel="Separation [λ/D]", ylabel="Core Area [(λ/D)²]",
+                xlabel="Separation [λ/D]",
+                ylabel="Core Area [(λ/D)²]",
             )
         return sep, vals
 
@@ -778,8 +950,6 @@ class Coronagraph:
 
         Delegates to :func:`yippy.export.export_ayo_csv`.
         """
-        from .export import export_ayo_csv
-
         return export_ayo_csv(
             self,
             output_path,

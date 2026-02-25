@@ -110,10 +110,8 @@ class HeaderData:
                 return unit
 
         logger.warning(
-            (
-                f"Using default unit for {key}: {default_unit}. "
-                f'Could not extract unit from comment: "{comment}"'
-            )
+            f"Using default unit for {key}: {default_unit}. "
+            f'Could not extract unit from comment: "{comment}"'
         )
         return default_unit
 

@@ -13,6 +13,8 @@ examples/QuarterSymmetric.ipynb
 examples/StellarIntens.ipynb
 examples/SkyTrans.ipynb
 examples/FourierInterpolation.ipynb
+noise_floor_conventions.md
+azimuthal_averaging.md
 ```
 
 ```{toctree}
