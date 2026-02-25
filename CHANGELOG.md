@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.0.0](https://github.com/CoreySpohn/yippy/compare/v1.12.2...v2.0.0) (2026-02-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* AYO validated performance metrics and 2D maps for pyEDITH refactor
+
+### Features
+
+* AYO validated performance curves and 2D map methods ([52a6766](https://github.com/CoreySpohn/yippy/commit/52a6766c59d9c1c83c9e699c3dbf3a8e1fa3bd0a))
+* AYO validated performance metrics and 2D maps for pyEDITH refactor ([f204461](https://github.com/CoreySpohn/yippy/commit/f204461fbb63530ac524ab2212d63c22348804f1))
+* Full equinox coronagraph ([3634fff](https://github.com/CoreySpohn/yippy/commit/3634fff61dcc929fd88fdb931323f98a02235abe))
+* Performance metrics refactor ([5d8c194](https://github.com/CoreySpohn/yippy/commit/5d8c194436703868ac38b99ae927eadc83a37111))
+
 ## [1.12.2](https://github.com/CoreySpohn/yippy/compare/v1.12.1...v1.12.2) (2025-12-10)
 
 
