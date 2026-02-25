@@ -9,10 +9,14 @@ description = "A Python and JAX wrapper to create a coronagraph object from a yi
 dependencies = [
   "astropy",
   "scipy",
+  "hwoutils",
   "lod_unit",
   "tqdm",
-  "pre-commit>=4.0.1",
   "jax",
+  "equinox",
+  "interpax",
+  "jaxtyping",
+  "pooch",
 ]
 license = { file = "LICENSE" }
 dynamic = ['readme', 'version']
@@ -55,7 +59,7 @@ test = ["nox", "pytest", "hypothesis", "pytest-cov"]
 exclude = ["docs"]
 
 [tool.ruff.lint]
-select = ["D", "E", "F", "I"]
+select = ["B", "D", "E", "F", "I", "UP", "RUF"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

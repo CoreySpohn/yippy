@@ -7,11 +7,14 @@
 ```{toctree}
 :maxdepth: 2
 examples/Basics.ipynb
+examples/PerformanceMetrics.ipynb
 examples/RadiallySymmetric.ipynb
 examples/QuarterSymmetric.ipynb
 examples/StellarIntens.ipynb
 examples/SkyTrans.ipynb
 examples/FourierInterpolation.ipynb
+noise_floor_conventions.md
+azimuthal_averaging.md
 ```
 
 ```{toctree}

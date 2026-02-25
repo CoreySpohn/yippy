@@ -1,79 +1,9 @@
 """JAX functions for image processing operations."""
 
-import os
-import re
 from functools import partial
 
-import jax
 import jax.numpy as jnp
 from jax import lax
-
-
-def enable_x64(use_x64=True):
-    """Changes the default array type to use 64 bit precision as in NumPy.
-
-    Lovingly borrowed from the numpyro library until JAX provides a more
-    convenient way.
-
-    Args:
-        use_x64 (Bool):
-            when `True`, JAX arrays will use 64 bits by default; else 32 bits.
-    """
-    if not use_x64:
-        use_x64 = bool(os.getenv("JAX_ENABLE_X64", 0))
-    jax.config.update("jax_enable_x64", use_x64)
-
-
-def set_platform(platform=None):
-    """Changes platform to CPU, GPU, or TPU.
-
-    This utility only takes effect at the beginning of your program.
-
-    Lovingly borrowed from the numpyro library until JAX provides a more
-    convenient way.
-
-    Args:
-        platform (str):
-           either 'cpu', 'gpu', or 'tpu'.
-    """
-    if platform is None:
-        platform = os.getenv("JAX_PLATFORM_NAME", "cpu")
-    jax.config.update("jax_platform_name", platform)
-
-
-def set_host_device_count(n: int) -> None:
-    """Set the number of CPU cores available to XLA.
-
-    By default, XLA considers all CPU cores as one device. This utility tells XLA
-    that there are `n` host (CPU) devices available to use. As a consequence, this
-    allows parallel mapping in JAX :func:`jax.pmap` to work in CPU platform.
-
-    Lovingly borrowed from the numpyro library until JAX provides a more
-    convenient way.
-
-    .. note:: This utility only takes effect at the beginning of your program.
-        Under the hood, this sets the environment variable
-        `XLA_FLAGS=--xla_force_host_platform_device_count=[num_devices]`, where
-        `[num_device]` is the desired number of CPU devices `n`.
-
-    .. warning:: Our understanding of the side effects of using the
-        `xla_force_host_platform_device_count` flag in XLA is incomplete. If you
-        observe some strange phenomenon when using this utility, please let us
-        know through our issue or forum page. More information is available in this
-        `JAX issue <https://github.com/google/jax/issues/1408>`_.
-
-
-    Args:
-        n (int):
-            number of CPU devices to use.
-    """
-    xla_flags_str = os.getenv("XLA_FLAGS", "")
-    xla_flags = re.sub(
-        r"--xla_force_host_platform_device_count=\S+", "", xla_flags_str
-    ).split()
-    os.environ["XLA_FLAGS"] = " ".join(
-        ["--xla_force_host_platform_device_count={}".format(n)] + xla_flags
-    )
 
 
 def get_pad_info(image, pad_factor):
@@ -122,7 +52,7 @@ def fft_shift_x(image, shift_pixels, phasor):
             The shifted image after applying the Fourier transform and removing
             the padding.
     """
-    n_pixels_orig, n_pad, img_edge, n_pixels_final = get_pad_info(image, 1.5)
+    _n_pixels_orig, n_pad, img_edge, _n_pixels_final = get_pad_info(image, 1.5)
 
     # Pad the image with zeros
     padded = lax.pad(image, 0.0, [(n_pad, n_pad, 0), (n_pad, n_pad, 0)])
@@ -169,7 +99,7 @@ def fft_shift_y(image, shift_pixels, phasor):
             The shifted image after applying the Fourier transform and removing
             the padding.
     """
-    n_pixels_orig, n_pad, img_edge, n_pixels_final = get_pad_info(image, 1.5)
+    _n_pixels_orig, n_pad, img_edge, _n_pixels_final = get_pad_info(image, 1.5)
 
     # Pad the image with zeros
     padded = lax.pad(image, 0.0, [(n_pad, n_pad, 0), (n_pad, n_pad, 0)])
@@ -1041,7 +971,7 @@ def synthesize_psf_separable(
     neighbors = jnp.pad(neighbors, pad_width)
 
     # Capture width for robust reconstruction
-    _, h_pad, w_pad = neighbors.shape
+    _, _h_pad, w_pad = neighbors.shape
 
     # FFT X (Real-to-Complex, Axis 2)
     # Output: (K, H_pad, W_pad//2 + 1)

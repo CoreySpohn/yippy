@@ -43,8 +43,32 @@ class OffJAX(OffAx):
         y_symmetric: bool,
         cpu_cores: int = 4,
         platform: str = "cpu",
+        downsample_shape: tuple[int, int] | None = None,
     ) -> None:
-        """Initializes the OffJAX class by casting YIP data to JAX arrays."""
+        """Initializes the OffJAX class by casting YIP data to JAX arrays.
+
+        Args:
+            yip_dir:
+                Path to the directory containing PSF and offset data.
+            offax_data_file:
+                Name of the file containing the PSF data.
+            offax_offsets_file:
+                Name of the file containing the offsets data.
+            pixel_scale:
+                Pixel scale of the PSF data in lambda/D.
+            x_symmetric:
+                Whether the PSFs are symmetric in x.
+            y_symmetric:
+                Whether the PSFs are symmetric in y.
+            cpu_cores:
+                Number of CPU cores to use for parallel processing.
+            platform:
+                Platform to use ('cpu' or 'gpu').
+            downsample_shape:
+                Optional target shape (ny, nx) to downsample PSFs to.
+                If provided, all PSFs will be resampled to this shape
+                immediately after loading, conserving total flux.
+        """
         super().__init__(
             yip_dir,
             offax_data_file,
@@ -52,6 +76,7 @@ class OffJAX(OffAx):
             pixel_scale,
             x_symmetric,
             y_symmetric,
+            downsample_shape=downsample_shape,
         )
         self.cpu_cores = cpu_cores
         self.platform = platform
@@ -218,7 +243,7 @@ class OffJAX(OffAx):
             mesh=mesh,
             in_specs=(P("i"), P("i"), P(), P(), P(), P(), P(), P()),
             out_specs=P("i"),
-            check_rep=False,
+            # check_rep=False,
         )(
             x_vals_padded,
             y_vals_padded,
