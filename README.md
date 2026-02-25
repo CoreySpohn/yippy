@@ -6,6 +6,8 @@
 <p align="center">
   <a href="https://pypi.org/project/yippy/"><img src="https://img.shields.io/pypi/v/yippy.svg?style=flat-square" alt="PyPI"/></a>
   <a href="https://yippy.readthedocs.io"><img src="https://readthedocs.org/projects/yippy/badge/?version=latest&style=flat-square" alt="Documentation Status"/></a>
+  <a href="https://github.com/coreyspohn/yippy/blob/main/LICENSE"><img src="https://img.shields.io/github/license/coreyspohn/yippy?style=flat-square" alt="License"/></a>
+  <a href="https://pypi.org/project/yippy/"><img src="https://img.shields.io/pypi/pyversions/yippy?style=flat-square" alt="Python"/></a>
   <!-- <a href="https://github.com/coreyspohn/yippy/actions/workflows/ci.yml/"><img src="https://img.shields.io/github/actions/workflow/status/coreyspohn/yippy/ci.yml?branch=main&logo=github&style=flat-square" alt="CI"/></a> -->
 </p>
 
@@ -13,11 +15,10 @@
 
 # yippy
 
-A wrapper to create a coronagraph object from a yield input package (a "YIP").
-A core feature is its ability to use Fourier interpolation to generate off axis
-PSFs at arbitrary locations in the (x,y) plane efficiently.
-`yippy` uses [JAX](https://jax.readthedocs.io/en/latest/) to speed up
-computation by default, with an optional Python backend.
+A Python and JAX library for loading coronagraph yield input packages (YIPs)
+and computing coronagraph performance metrics. yippy provides Fourier-based
+off-axis PSF interpolation, throughput/contrast/core-area curves, 2D
+performance maps, and export to EXOSIMS and AYO formats.
 
 ## Installation
 
@@ -45,6 +46,10 @@ offaxis_psf = coro.offax(2 * lod, 5 * lod)
 throughput = coro.throughput(5.0)        # scalar or array
 contrast   = coro.raw_contrast(5.0)
 occ_trans  = coro.occulter_transmission(5.0)
+
+# 2D performance maps (pixel grids)
+throughput_map = coro.throughput_map()
+core_area_map  = coro.core_area_map()
 ```
 
 ## Two-Class Design
@@ -60,7 +65,7 @@ yippy provides two coronagraph classes for different use cases:
 | **I/O & export** | EXOSIMS FITS, AYO CSV | None (simulation only) |
 | **Performance curves** | Computed on init | Converted from `Coronagraph` |
 
-### `Coronagraph` — Analysis & Data Management
+### `Coronagraph` -- Analysis & Data Management
 
 The primary class for loading YIPs, computing performance curves, and
 exporting to external formats:
@@ -70,22 +75,30 @@ from yippy import Coronagraph
 
 coro = Coronagraph("path/to/yip")
 
-# Access pre-computed performance curves
+# 1D performance curves (scalar or array separations in lam/D)
 coro.throughput(5.0)
 coro.raw_contrast(5.0)
-coro.noise_floor_exosims(5.0)
 coro.occulter_transmission(5.0)
 coro.core_area(5.0)
 coro.core_mean_intensity(5.0)
 
-# Export to EXOSIMS format
-coro.to_exosims()
+# Noise floors
+coro.noise_floor_exosims(5.0)           # |raw_contrast| / ppf
+coro.noise_floor_ayo(5.0, ppf=30.0)     # core_mean_intensity / ppf
 
-# Export to AYO CSV format
+# 2D maps (full pixel grids)
+coro.separation_map()
+coro.throughput_map()
+coro.core_area_map()
+coro.core_mean_intensity_map()
+coro.noise_floor_ayo_map(ppf=30.0)
+
+# Export
+coro.to_exosims()
 coro.dump_ayo_csv("output.csv")
 ```
 
-### `EqxCoronagraph` — JIT-Compatible Simulation
+### `EqxCoronagraph` -- JIT-Compatible Simulation
 
 A pure JAX/Equinox module for use inside `jax.jit`-compiled pipelines:
 
@@ -117,6 +130,8 @@ from yippy.performance import (
     compute_core_area_curve,
     compute_occ_trans_curve,
     compute_core_mean_intensity_curve,
+    compute_truncation_throughput_curve,     # PSF truncation-ratio aperture
+    compute_truncation_core_area_curve,
 )
 
 # Compute individual curves
@@ -124,8 +139,12 @@ separations, throughputs = compute_throughput_curve(coro)
 separations, contrasts  = compute_raw_contrast_curve(coro)
 ```
 
-These are the same functions used internally by `Coronagraph` during
-initialization.
+### PSF Truncation Ratio
+
+When `psf_trunc_ratio` is set (e.g. `Coronagraph(path, psf_trunc_ratio=0.3)`),
+throughput and core area are computed using an adaptive aperture that includes
+all oversampled pixels exceeding `ratio * peak`. This matches AYO's
+`photap_frac` / `omega_lod` calculation and is recommended for ETC integration.
 
 ## Example Data
 
@@ -165,20 +184,37 @@ offaxis_psf = coro.offax(x_pos, y_pos, lam=wavelength, D=telescope_diameter, dis
 
 ## JAX
 
-The default backend is JAX, which is a high-performance numerical computing library
-that we use for JIT compilation and GPU/TPU support. By default, JAX uses 32-bit
-floating point precision, which leads to faster computation and lower memory overhead
-but results in lower precision (~1e-6 precision). If you need precision at the
-1e-16 level, set `use_x64=True`.
+yippy uses [JAX](https://jax.readthedocs.io) for JIT compilation and
+GPU/TPU-accelerated PSF generation. JAX defaults to 32-bit precision;
+if you need 64-bit precision, configure it
+**before** importing yippy or any other JAX-based library:
 
-### Off-axis PSF options
+```python
+# At the very top of your script
+from hwoutils import enable_x64, set_platform
 
-- `use_jax`: Use JAX for computation. Default is `True`.
-- `use_x64`: Use 64-bit floating point precision. Default is `False`.
-- `x_symmetric`: Off-axis PSF is symmetric about the x-axis. Default is `True`.
-- `y_symmetric`: Off-axis PSF is symmetric about the y-axis. Default is `False`.
-- `cpu_cores`: Number of CPU cores to use. Default is `1`.
-- `platform`: Computing platform to use for JAX computation. Options are `cpu`, `gpu`, `tpu`. Default is `cpu`.
+enable_x64()           # switch to float64
+set_platform("cpu")    # or "gpu", "gpu,cpu" for fallback
+
+# Now it's safe to import yippy
+from yippy import Coronagraph
+```
+
+Or via environment variables (safest):
+
+```bash
+JAX_ENABLE_X64=True JAX_PLATFORMS=cpu python my_script.py
+```
+
+See the [JAX Configuration Guide](https://github.com/CoreySpohn/hwoutils/blob/main/docs/jax_configuration.md)
+in hwoutils for details and common gotchas.
+
+### Constructor options
+
+- `use_jax`: Use JAX for PSF computation. Default is `True`.
+- `x_symmetric`: Off-axis PSFs are symmetric about the x-axis. Default is `True`.
+- `y_symmetric`: Off-axis PSFs are symmetric about the y-axis. Default is `True`.
+- `cpu_cores`: Number of CPU cores for parallel PSF generation via `shard_map`. Default is `4`.
 
 ### Parallel processing of off-axis PSFs
 

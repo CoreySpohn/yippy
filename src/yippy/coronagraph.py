@@ -7,7 +7,6 @@ import astropy.units as u
 import jax
 import jax.numpy as jnp
 import numpy as np
-from hwoutils import enable_x64, set_host_device_count, set_platform
 from lod_unit import lod
 from tqdm import tqdm
 
@@ -47,7 +46,6 @@ class Coronagraph:
         self,
         yip_path: Path,
         use_jax: bool = True,
-        use_x64: bool = False,
         stellar_intens_file: str = "stellar_intens.fits",
         stellar_diam_file: str = "stellar_intens_diam_list.fits",
         offax_data_file: str = "offax_psf.fits",
@@ -57,7 +55,6 @@ class Coronagraph:
         x_symmetric: bool = True,
         y_symmetric: bool = True,
         cpu_cores: int = 4,
-        platform: str = "cpu",
         use_quarter_psf_datacube: bool = False,
         downsample_shape: tuple[int, int] | None = None,
         aperture_radius_lod: float = 0.7,
@@ -78,9 +75,7 @@ class Coronagraph:
                     offax_psf - PSF of off-axis sources
                     sky_trans - Sky transmission data
             use_jax (bool):
-                Whether to use JAX for optimized computation. Default is False.
-            use_x64 (bool):
-                Whether to use 64-bit floating point precision. Default is False.
+                Whether to use JAX for optimized computation. Default is True.
             stellar_intens_file (str):
                 Name of the stellar intensity file. Default is stellar_intens.fits
             stellar_diam_file (str):
@@ -100,10 +95,8 @@ class Coronagraph:
             y_symmetric (bool):
                 Whether off-axis PSFs are symmetric about the y-axis. Default is False.
             cpu_cores (int):
-                Number of CPU cores to use. Default is 1.
-            platform (str):
-                Platform to use for JAX computation. Default is "cpu". Options are
-                "cpu", "gpu", "tpu".
+                Number of CPU cores for parallel PSF generation via
+                ``shard_map``. Default is 4.
             use_quarter_psf_datacube (bool):
                 Whether to compute the PSF datacube in only the first quadrant.
                 This is faster and uses less memory, but may not be accurate for
@@ -186,13 +179,6 @@ class Coronagraph:
 
         # Offaxis PSF of the planet as function of separation from the star
         if use_jax:
-            # Apply JAX settings
-            if use_x64:
-                enable_x64()
-            if platform != "cpu":
-                set_platform(platform)
-            elif cpu_cores > 1:
-                set_host_device_count(cpu_cores)
             self.offax = OffJAX(
                 yip_path,
                 offax_data_file,
@@ -201,7 +187,6 @@ class Coronagraph:
                 x_symmetric,
                 y_symmetric,
                 cpu_cores,
-                platform,
                 downsample_shape=downsample_shape,
             )
         else:
@@ -222,8 +207,7 @@ class Coronagraph:
         # Get the sky_trans mask
         self.sky_trans = SkyTrans(yip_path, sky_trans_file)
 
-        # Store platform and use_jax for later use
-        self.platform = platform
+        # Store use_jax for later use
         self.use_jax = use_jax
 
         # PSF datacube here is a 4D array of PSFs at each pixel (x psf offset,
@@ -342,22 +326,19 @@ class Coronagraph:
             logger.info(f"PSF datacube saved to {datacube_path}.")
 
         # Move datacube to GPU/TPU device if conditions are met
-        if (
-            self.use_quarter_psf_datacube
-            and self.use_jax
-            and self.platform in ("gpu", "tpu")
-        ):
+        backend = jax.default_backend().lower()
+        if self.use_quarter_psf_datacube and self.use_jax and backend in ("gpu", "tpu"):
             # Check if already a JAX array on the target device
-            target_device = jax.devices(self.platform)[0]
+            target_device = jax.devices(backend)[0]
             already_on_device = (
                 hasattr(psfs, "devices") and target_device in psfs.devices()
             )
 
             if already_on_device:
-                logger.info(f"PSF datacube already on {self.platform.upper()} device")
+                logger.info(f"PSF datacube already on {backend.upper()} device")
             else:
                 logger.info(
-                    f"Moving PSF datacube to {self.platform.upper()} device "
+                    f"Moving PSF datacube to {backend.upper()} device "
                     "(quarter symmetric datacube)"
                 )
                 # Convert to JAX array and place on device
@@ -367,12 +348,11 @@ class Coronagraph:
                         psfs = jnp.asarray(psfs, dtype=jnp.float32)
                     psfs = jax.device_put(psfs, target_device)
                     logger.info(
-                        f"Successfully moved PSF datacube to {self.platform.upper()} "
-                        "device"
+                        f"Successfully moved PSF datacube to {backend.upper()} device"
                     )
                 except (MemoryError, RuntimeError) as e:
                     logger.warning(
-                        f"Failed to move PSF datacube to {self.platform.upper()} "
+                        f"Failed to move PSF datacube to {backend.upper()} "
                         f"device (insufficient memory): {e}. Keeping on CPU."
                     )
                     # psfs remains as numpy array on CPU
