@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/CoreySpohn/yippy/compare/v2.0.0...v2.0.1) (2026-02-25)
+
+
+### Bug Fixes
+
+* Deprecating non-functional jax configuration options ([47bceec](https://github.com/CoreySpohn/yippy/commit/47bceec272a8d4197f4d26a5fc132bb5355e740b))
+
 ## [2.0.0](https://github.com/CoreySpohn/yippy/compare/v1.12.2...v2.0.0) (2026-02-25)
 
 
