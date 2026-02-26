@@ -2,7 +2,6 @@
 
 from multiprocessing import Pool
 from pathlib import Path
-from typing import Optional
 
 import astropy.io.fits as pyfits
 import astropy.units as u
@@ -56,7 +55,7 @@ class OffAx:
         pixel_scale: Quantity,
         x_symmetric: bool,
         y_symmetric: bool,
-        downsample_shape: Optional[tuple[int, int]] = None,
+        downsample_shape: tuple[int, int] | None = None,
     ) -> None:
         """Initializes the OffAx class by loading PSF and offset data from YIP.
 
