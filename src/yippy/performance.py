@@ -18,10 +18,11 @@ from typing import TYPE_CHECKING
 import astropy.units as u
 import jax.numpy as jnp
 import numpy as np
+from hwoutils.constants import GAUSSIAN_FWHM_FACTOR
 from hwoutils.radial import radial_profile
 from hwoutils.transforms import resample_flux
 from lod_unit import lod
-from scipy.interpolate import make_interp_spline
+from scipy.interpolate import RegularGridInterpolator, make_interp_spline
 from scipy.optimize import root_scalar
 
 from .logger import logger
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
 class OffAxisPosition:
     """Data for a single off-axis PSF position along the performance axis."""
 
-    separation: float  # |x| in λ/D
+    separation: float  # |x| in lam/D
     psf: np.ndarray  # the off-axis PSF image
     px: int  # pixel x position in the image
     py: int  # pixel y position in the image
@@ -58,7 +59,7 @@ class OffAxisPosition:
 
 
 def _iter_xaxis_positions(coro: Coronagraph):
-    """Yield :class:`OffAxisPosition` for each valid x-offset (y ≈ 0).
+    """Yield :class:`OffAxisPosition` for each valid x-offset (y ~= 0).
 
     Iterates over each valid x-offset position along the performance-curve
     axis.
@@ -68,7 +69,7 @@ def _iter_xaxis_positions(coro: Coronagraph):
     y_lod_val = y_offsets[y_idx]
 
     if y_lod_val != 0:
-        logger.warning(f"No PSF at y=0, using closest y offset: {y_lod_val:.3f} λ/D")
+        logger.warning(f"No PSF at y=0, using closest y offset: {y_lod_val:.3f} lam/D")
 
     max_sep = None
     if hasattr(coro.offax, "max_offset_in_image"):
@@ -107,7 +108,7 @@ def _oversample_psf(psf: np.ndarray, pixel_scale: float, oversample: int) -> np.
 
     Args:
         psf: 2D PSF image.
-        pixel_scale: Pixel scale of the input PSF (λ/D per pixel).
+        pixel_scale: Pixel scale of the input PSF (lam/D per pixel).
         oversample: Oversampling factor.
 
     Returns:
@@ -165,7 +166,7 @@ def _compute_iwa_owa(
     if hasattr(coro.offax, "max_offset_in_image"):
         coro.OWA = coro.offax.max_offset_in_image
         logger.info(
-            f"OWA set to max_offset_in_image: {coro.OWA.to(u.lod).value:.2f} λ/D"
+            f"OWA set to max_offset_in_image: {coro.OWA.to(u.lod).value:.2f} lam/D"
         )
     else:
         coro.OWA = np.max(sep) * lod
@@ -251,7 +252,7 @@ def compute_throughput_curve(
 
     Args:
         coro: Coronagraph instance.
-        aperture_radius_lod: Aperture radius in λ/D.
+        aperture_radius_lod: Aperture radius in lam/D.
         oversample: Oversampling factor.
 
     Returns:
@@ -290,7 +291,7 @@ def compute_raw_contrast_curve(
     Args:
         coro: Coronagraph instance.
         stellar_diam: Stellar angular diameter for the on-axis PSF.
-        aperture_radius_lod: Aperture radius in λ/D.
+        aperture_radius_lod: Aperture radius in lam/D.
         oversample: Oversampling factor.
 
     Returns:
@@ -317,7 +318,7 @@ def compute_raw_contrast_curve(
         star_flux = measure_flux_in_oversampled_aperture(
             sub_os_s, sx_os, sy_os, r_os_s, sub_orig_s
         )
-        contrast_val = star_flux / planet_flux if star_flux > 0 else 0
+        contrast_val = star_flux / planet_flux if planet_flux > 0 else np.inf
         separations.append(pos.separation)
         contrasts.append(contrast_val)
 
@@ -339,22 +340,23 @@ def compute_core_area_curve(
 
     Args:
         coro: Coronagraph instance.
-        aperture_radius_lod: Aperture radius in λ/D.
+        aperture_radius_lod: Aperture radius in lam/D.
         fit_gaussian: Whether to fit a 2-D Gaussian.
         use_phot_aperture_as_min: Use aperture area as a floor when fitting.
         oversample: Oversampling factor.
 
     Returns:
-        ``(separations, core_areas)`` - sorted 1-D arrays, area in (λ/D)².
+        ``(separations, core_areas)`` - sorted 1-D arrays, area in (lam/D)**2.
     """
     if fit_gaussian:
         from scipy.optimize import curve_fit
 
         def gaussian_2d(coords, amplitude, x0, y0, sigma_x, sigma_y):
             x, y = coords
-            return amplitude * np.exp(
-                -(((x - x0) / sigma_x) ** 2 + ((y - y0) / sigma_y) ** 2) / 2
-            )
+            return (
+                amplitude
+                * np.exp(-(((x - x0) / sigma_x) ** 2 + ((y - y0) / sigma_y) ** 2) / 2)
+            ).ravel()
 
     separations, core_areas = [], []
 
@@ -379,8 +381,8 @@ def compute_core_area_curve(
             _, _, _, sigma_x, sigma_y = popt
             sigma_x_lod = sigma_x / oversample * coro.pixel_scale.value
             sigma_y_lod = sigma_y / oversample * coro.pixel_scale.value
-            fwhm_x = 2.355 * sigma_x_lod
-            fwhm_y = 2.355 * sigma_y_lod
+            fwhm_x = GAUSSIAN_FWHM_FACTOR * sigma_x_lod
+            fwhm_y = GAUSSIAN_FWHM_FACTOR * sigma_y_lod
             area = np.pi * fwhm_x * fwhm_y / 4
             if use_phot_aperture_as_min:
                 area = max(area, np.pi * aperture_radius_lod**2)
@@ -439,7 +441,7 @@ def compute_truncation_core_area_curve(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute core area using a PSF-truncation-ratio aperture.
 
-    The core area is the solid angle (in (λ/D)²) of all oversampled pixels
+    The core area is the solid angle (in (lam/D)**2) of all oversampled pixels
     that exceed ``psf_trunc_ratio * peak``.  This matches AYO's
     ``omega_lod`` calculation.
 
@@ -455,7 +457,7 @@ def compute_truncation_core_area_curve(
     if oversample is None:
         oversample = int(np.ceil(pix_lod / 0.05))
 
-    # Solid angle of one oversampled pixel in (λ/D)²
+    # Solid angle of one oversampled pixel in (lam/D)**2
     os_pix_lod = pix_lod / oversample
     pix_solid_angle = os_pix_lod**2
 
@@ -662,10 +664,36 @@ def compute_all_performance_curves(
     sep_core_intensity, core_intensities = compute_core_mean_intensity_curve(
         coro, stellar_diam_values=None
     )
-    coro.core_intensity_interp = make_interp_spline(
-        sep_core_intensity, core_intensities[stellar_diam], k=interp_order
-    )
     coro.core_intensity_dict = core_intensities
+
+    # Build a 2D interpolant over (separation, stellar_diam) when multiple
+    # diameters are available, matching EXOSIMS's RegularGridInterpolator
+    # approach.  Out-of-bounds queries return NaN rather than a physically
+    # meaningless fill value.
+    diams_sorted = sorted(core_intensities.keys(), key=lambda d: d.value)
+    diam_values = np.array([d.value for d in diams_sorted])
+    intensity_grid = np.column_stack(
+        [core_intensities[d] for d in diams_sorted]
+    )  # shape: (n_sep, n_diam)
+
+    if len(diam_values) > 1:
+        coro.core_intensity_interp_2d = RegularGridInterpolator(
+            (sep_core_intensity, diam_values),
+            intensity_grid,
+            method="linear",
+            bounds_error=False,
+            fill_value=np.nan,
+        )
+    else:
+        coro.core_intensity_interp_2d = None
+
+    # 1D spline for the default stellar diameter (backward compatibility
+    # and fast path for the common single-diameter case)
+    coro.core_intensity_interp = make_interp_spline(
+        sep_core_intensity,
+        core_intensities[stellar_diam],
+        k=interp_order,
+    )
 
     # ------------------------------------------------------------------
     # IWA / OWA
@@ -680,7 +708,7 @@ def compute_all_performance_curves(
             sep,
             throughput,
             title=f"{coro.name} Throughput",
-            xlabel="Separation [λ/D]",
+            xlabel="Separation [lam/D]",
             ylabel="Throughput",
             ms=6,
         )
@@ -688,7 +716,7 @@ def compute_all_performance_curves(
             sep,
             raw_contrast,
             title=f"{coro.name} Raw Contrast",
-            xlabel="Separation [λ/D]",
+            xlabel="Separation [lam/D]",
             ylabel="Raw Contrast",
             log_scale=True,
         )
@@ -699,8 +727,8 @@ def compute_all_performance_curves(
             sep_ca,
             core_area,
             title=f"{coro.name} Core Area{suffix}",
-            xlabel="Separation [λ/D]",
-            ylabel="Core Area [(λ/D)²]",
+            xlabel="Separation [lam/D]",
+            ylabel="Core Area [(lam/D)**2]",
         )
 
     return {

@@ -56,7 +56,7 @@ def _save_to_exosims_format(
         )
     base_header["UNITS"] = (units, "Angular units")
 
-    # 1. Occulter transmission
+    # Occulter transmission
     hdul = pyfits.HDUList(
         [
             pyfits.PrimaryHDU(
@@ -67,7 +67,7 @@ def _save_to_exosims_format(
     )
     hdul.writeto(exosims_dir / "occ_trans.fits", overwrite=True)
 
-    # 2. Core throughput
+    # Core throughput
     thruput_header = base_header.copy()
     if fit_gaussian_for_core_area:
         thruput_header["PHOTAPER"] = "Gaussian"
@@ -87,7 +87,7 @@ def _save_to_exosims_format(
     )
     hdul.writeto(exosims_dir / "core_thruput.fits", overwrite=True)
 
-    # 3. Core area (only for Gaussian fitting)
+    # Core area (only for Gaussian fitting)
     if fit_gaussian_for_core_area:
         hdul = pyfits.HDUList(
             [
@@ -100,10 +100,10 @@ def _save_to_exosims_format(
         hdul.writeto(exosims_dir / "core_area.fits", overwrite=True)
     else:
         logger.info(
-            f"Fixed aperture core area: {aperture_radius_lod**2 * np.pi:.6f} (λ/D)²"
+            f"Fixed aperture core area: {aperture_radius_lod**2 * np.pi:.6f} (lam/D)**2"
         )
 
-    # 4. Core mean intensity
+    # Core mean intensity
     ci_header = base_header.copy()
     stellar_diams = list(core_intensities.keys())
     for j, diam in enumerate(stellar_diams):
@@ -124,7 +124,7 @@ def _save_to_exosims_format(
     )
     hdul.writeto(exosims_dir / "core_mean_intensity.fits", overwrite=True)
 
-    # 5. Raw contrast
+    # Raw contrast
     hdul = pyfits.HDUList(
         [
             pyfits.PrimaryHDU(

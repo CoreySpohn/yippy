@@ -6,18 +6,41 @@
 
 ```{toctree}
 :maxdepth: 2
+:caption: Getting Started
 examples/Basics.ipynb
-examples/PerformanceMetrics.ipynb
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: YIP Internals
 examples/RadiallySymmetric.ipynb
 examples/QuarterSymmetric.ipynb
 examples/StellarIntens.ipynb
 examples/SkyTrans.ipynb
 examples/FourierInterpolation.ipynb
-noise_floor_conventions.md
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Performance Metrics
+examples/00_Performance_Metrics_Overview.ipynb
+examples/01_Core_Throughput.ipynb
+examples/02_Stellar_Leakage_and_Contrast.ipynb
+examples/03_Spatial_Metrics_and_Backgrounds.ipynb
+examples/04_Noise_Floors_and_Integration_Time.ipynb
+examples/05_Aperture_Methods_Comparison.ipynb
+examples/06_Noise_Floor_Conventions.ipynb
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Reference
 azimuthal_averaging.md
+benchmarking.md
 ```
 
 ```{toctree}
 :maxdepth: 1
+:caption: Development
 develop/_changelog.md
 ```

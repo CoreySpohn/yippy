@@ -282,6 +282,28 @@ def measure_flux_in_oversampled_aperture(
     return flux_in_ap
 
 
+def crop_around_peak(arr, radius):
+    """Crop a 2D array to a square region centered on the peak pixel.
+
+    The output is always square with side length ``2 * r`` where ``r``
+    is the largest feasible radius that fits within the array bounds
+    (capped at the requested *radius*). This function is mostly used
+    in the documentation animations.
+
+    Args:
+        arr (np.ndarray): 2D input array.
+        radius (int): Desired half-width of the output crop in pixels.
+
+    Returns:
+        np.ndarray: Square cropped subarray centered on the peak.
+    """
+    peak_y, peak_x = np.unravel_index(arr.argmax(), arr.shape)
+    ny, nx = arr.shape
+    # Feasible half-widths in each direction from the peak
+    r = min(radius, peak_y, ny - peak_y, peak_x, nx - peak_x)
+    return arr[peak_y - r : peak_y + r, peak_x - r : peak_x + r]
+
+
 def fft_shift(image, x=0, y=0):
     """Apply a Fourier shift to an image along the x and/or y axes.
 

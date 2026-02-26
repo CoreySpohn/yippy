@@ -81,7 +81,7 @@ to the center where relative percentages blow up. The mean ~3% difference
 is real and originates from rotation interpolation artifacts in the
 rotate-and-average method.
 
-![Comparison of rotate vs radial profile azimuthal averaging](fig_az_avg_comparison.png)
+![Comparison of rotate vs radial profile azimuthal averaging](_static/fig_az_avg_comparison.png)
 
 **Left pair**: 2D maps (log scale) from each method appear visually
 similar, with clear Airy ring structure. **Third column**: relative
@@ -110,4 +110,4 @@ For the noise floor, divide by the post-processing factor:
 noise_floor_ayo = coro.core_mean_intensity(separation) / ppf
 ```
 
-See also: [Noise Floor Conventions](noise_floor_conventions.md)
+See also: [Noise Floor Conventions](examples/06_Noise_Floor_Conventions.ipynb)

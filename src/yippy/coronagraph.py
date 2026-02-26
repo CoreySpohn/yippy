@@ -114,7 +114,7 @@ class Coronagraph:
                 If provided, raw contrast values are floored at this value.
                 Typical AYO value is 1e-10. Default is None (no floor).
             use_inscribed_diameter (bool):
-                Whether to use the inscribed diameter for λ/D calculations.
+                Whether to use the inscribed diameter for lam/D calculations.
                 When True, input separations are scaled by D/D_INSC to
                 convert from inscribed to circumscribed units. Default False.
             psf_trunc_ratio (float | None):
@@ -150,7 +150,7 @@ class Coronagraph:
         self.pixel_scale = self.header.pixscale
         self.frac_obscured = self.header.obscured
 
-        # Optionally use inscribed diameter for λ/D calculations (AYO compatibility)
+        # Optionally use inscribed diameter for lam/D calculations (AYO compatibility)
         # When enabled, input separations are scaled by D/D_INSC before querying
         self.use_inscribed_diameter = use_inscribed_diameter
         self._diameter_ratio = 1.0  # Default: no scaling
@@ -506,7 +506,7 @@ class Coronagraph:
                 sep,
                 occ,
                 title=f"{self.name} Occulter Transmission",
-                xlabel="Separation [λ/D]",
+                xlabel="Separation [lam/D]",
                 ylabel="Occulter Transmission",
             )
         return sep, occ
@@ -525,8 +525,8 @@ class Coronagraph:
 
             plt.figure(figsize=(8, 6))
             for diam, profile in intensities.items():
-                plt.plot(sep, profile, "-", label=f"Diam = {diam.value:.1f} λ/D")
-            plt.xlabel("Separation [λ/D]")
+                plt.plot(sep, profile, "-", label=f"Diam = {diam.value:.1f} lam/D")
+            plt.xlabel("Separation [lam/D]")
             plt.ylabel("Core Mean Intensity")
             plt.title(f"{self.name} Core Mean Intensity")
             plt.yscale("log")
@@ -615,7 +615,7 @@ class Coronagraph:
         contrast-normalized units (per-aperture, divided by throughput).
         EXOSIMS multiplies this by core_thruput to recover C_sr.
 
-        See :doc:`/noise_floor_conventions` for details.
+        See :doc:`/examples/06_Noise_Floor_Conventions` for details.
 
         Args:
             separation: Separation(s) in lambda/D.
@@ -642,7 +642,7 @@ class Coronagraph:
         per-pixel intensity units.  AYO and pyEDITH multiply this by
         ``omega / pixscale**2`` to get the per-aperture noise.
 
-        See :doc:`/noise_floor_conventions` for details.
+        See :doc:`/examples/06_Noise_Floor_Conventions` for details.
 
         Args:
             separation: Separation(s) in lambda/D.
@@ -689,19 +689,45 @@ class Coronagraph:
     def core_mean_intensity(self, separation, stellar_diam=0.0 * lod):
         """Return core mean intensity at the given separation(s).
 
+        Interpolates over both separation and stellar angular diameter
+        using a 2D ``RegularGridInterpolator`` when multiple diameters
+        are available and a non-default diameter is requested.  Uses
+        the faster 1D spline for the default diameter (point source)
+        or when the yield input package contains only one diameter.
+
+        Out-of-bounds queries on the 2D grid return ``NaN``.
+
         Args:
             separation: Separation(s) in lambda/D.
-            stellar_diam: Stellar diameter. Currently only 0.0*lod supported.
+            stellar_diam: Stellar angular diameter (Quantity in lod
+                units, float in lod, or array-like).  Default is
+                0.0*lod (point source).
 
         Returns:
             float or numpy.ndarray: Core mean intensity value(s).
         """
         sep_values = self._convert_separation_to_lod(separation)
-        if stellar_diam != 0.0 * lod:
-            logger.warning(
-                "Only stellar_diam=0.0*lod is currently supported for interpolation"
+
+        # Extract unitless diameter value
+        if hasattr(stellar_diam, "value"):
+            diam_val = float(stellar_diam.value)
+        else:
+            diam_val = float(stellar_diam)
+
+        # Use 1D spline for the default diameter (fast path, extrapolates
+        # naturally).  Route through 2D only for non-default diameters
+        # where cross-diameter interpolation is needed.
+        if diam_val != 0.0 and self.core_intensity_interp_2d is not None:
+            points = np.column_stack(
+                [
+                    sep_values,
+                    np.full_like(sep_values, diam_val),
+                ]
             )
-        result = self.core_intensity_interp(sep_values)
+            result = self.core_intensity_interp_2d(points)
+        else:
+            result = self.core_intensity_interp(sep_values)
+
         if self._is_scalar_input(sep_values, separation):
             return float(result[0])
         return result
@@ -832,7 +858,7 @@ class Coronagraph:
                 sep,
                 vals,
                 title=f"{self.name} Throughput",
-                xlabel="Separation [λ/D]",
+                xlabel="Separation [lam/D]",
                 ylabel="Throughput",
                 ms=6,
             )
@@ -856,7 +882,7 @@ class Coronagraph:
                 sep,
                 vals,
                 title=f"{self.name} Raw Contrast",
-                xlabel="Separation [λ/D]",
+                xlabel="Separation [lam/D]",
                 ylabel="Raw Contrast",
                 log_scale=True,
             )
@@ -887,8 +913,8 @@ class Coronagraph:
                 sep,
                 vals,
                 title=f"{self.name} Core Area{suffix}",
-                xlabel="Separation [λ/D]",
-                ylabel="Core Area [(λ/D)²]",
+                xlabel="Separation [lam/D]",
+                ylabel="Core Area [(lam/D)**2]",
             )
         return sep, vals
 

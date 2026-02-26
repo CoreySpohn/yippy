@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 
 class EqxCoronagraph(eqx.Module):
-    """Pure JAX/Equinox coronagraph — no astropy, no scipy, no I/O at runtime.
+    """Pure JAX/Equinox coronagraph -- no astropy, no scipy, no I/O at runtime.
 
     This module stores all coronagraph data as JAX arrays and interpax
     interpolators.  It is a valid pytree and can be passed through any JAX
@@ -53,14 +53,14 @@ class EqxCoronagraph(eqx.Module):
 
     Fields fall into two categories when processed by ``eqx.filter_jit``:
 
-    **Dynamic** (JAX arrays / eqx.Module leaves — values can change without
+    **Dynamic** (JAX arrays / eqx.Module leaves -- values can change without
     recompiling, *provided shapes stay the same*):
 
     - ``sky_trans``, ``psf_datacube``
     - All ``interpax.CubicSpline`` interpolators (they are ``eqx.Module``
       instances whose leaves are JAX arrays)
 
-    **Static** (non-array Python objects — changing triggers recompilation,
+    **Static** (non-array Python objects -- changing triggers recompilation,
     but ``filter_jit`` handles this automatically):
 
     - ``create_psf``, ``create_psfs`` (callables / closures)
@@ -73,35 +73,37 @@ class EqxCoronagraph(eqx.Module):
     expected and unavoidable.
     """
 
-    # ── Scalar metadata (auto-static in filter_jit) ───────────────────────
+    # -- Scalar metadata (auto-static in filter_jit) -----------------------
     pixel_scale_lod: float
     psf_shape: tuple[int, int]
     center_x: float
     center_y: float
-    IWA: float  # inner working angle in λ/D
-    OWA: float  # outer working angle in λ/D
+    IWA: float  # inner working angle in lam/D
+    OWA: float  # outer working angle in lam/D
     frac_obscured: float
     contrast_floor: float | None
 
-    # ── Off-axis PSF synthesis (auto-static: callables) ──────────────────
+    # -- Off-axis PSF synthesis (auto-static: callables) ------------------
     create_psf: callable
     create_psfs: callable
 
-    # ── Stellar intensity interpolation (dynamic: eqx.Module) ───────────
+    # -- Stellar intensity interpolation (dynamic: eqx.Module) -----------
     _stellar_ln_interp: interpax.CubicSpline
 
-    # ── Performance curves (dynamic: eqx.Module) ────────────────────────
+    # -- Performance curves (dynamic: eqx.Module) ------------------------
     _throughput_interp: interpax.CubicSpline
     _log_contrast_interp: interpax.CubicSpline
     _occ_trans_interp: interpax.CubicSpline
     _core_area_interp: interpax.CubicSpline
     _core_mean_intensity_interp: interpax.CubicSpline
+    _core_mean_intensity_interp_2d: interpax.Interpolator2D | None
+    _has_2d_core_intensity: bool
 
-    # ── Static arrays (dynamic) ─────────────────────────────────────────
+    # -- Static arrays (dynamic) -----------------------------------------
     sky_trans: Array
     psf_datacube: Array | None
 
-    # ── Construction ─────────────────────────────────────────────────────
+    # -- Construction -----------------------------------------------------
 
     def __init__(
         self,
@@ -137,11 +139,11 @@ class EqxCoronagraph(eqx.Module):
             downsample_shape:
                 Optional ``(ny, nx)`` to downsample PSFs (forwarded).
             aperture_radius_lod:
-                Aperture radius in λ/D for performance curves (forwarded).
+                Aperture radius in lam/D for performance curves (forwarded).
             contrast_floor:
                 Minimum contrast value for engineering stability floor (forwarded).
             use_inscribed_diameter:
-                Whether to use inscribed diameter for λ/D calcs (forwarded).
+                Whether to use inscribed diameter for lam/D calcs (forwarded).
             x_symmetric:
                 Whether off-axis PSFs are symmetric about the x-axis (forwarded).
             y_symmetric:
@@ -155,7 +157,7 @@ class EqxCoronagraph(eqx.Module):
         from .coronagraph import Coronagraph as YippyCoro
         from .offjax import OffJAX
 
-        # ── Build or validate the source Coronagraph ────────────────────
+        # -- Build or validate the source Coronagraph --------------------
         if yippy_coro is None and yip_path is None:
             raise ValueError("Provide either yip_path or yippy_coro")
 
@@ -178,7 +180,7 @@ class EqxCoronagraph(eqx.Module):
                 "to create an EqxCoronagraph"
             )
 
-        # ── Scalar metadata ─────────────────────────────────────────────
+        # -- Scalar metadata ---------------------------------------------
         self.pixel_scale_lod = float(yippy_coro.pixel_scale.value)
         self.psf_shape = tuple(map(int, yippy_coro.psf_shape))
         self.center_x = float(yippy_coro.offax.center_x.value)
@@ -190,11 +192,11 @@ class EqxCoronagraph(eqx.Module):
             float(contrast_floor) if contrast_floor is not None else None
         )
 
-        # ── PSF creation callables ──────────────────────────────────────
+        # -- PSF creation callables --------------------------------------
         self.create_psf = yippy_coro.offax.create_psf
         self.create_psfs = yippy_coro.offax.create_psfs
 
-        # ── Stellar intensity interpolation ─────────────────────────────
+        # -- Stellar intensity interpolation -----------------------------
         stellar = yippy_coro.stellar_intens
         stellar_diams = jnp.asarray(stellar.diams.value, dtype=jnp.float32)
         # Convert stellar PSFs to JAX arrays and build log-space interpolator
@@ -203,7 +205,7 @@ class EqxCoronagraph(eqx.Module):
             stellar_diams, jnp.log(stellar_psfs)
         )
 
-        # ── Performance curve interpolators ─────────────────────────────
+        # -- Performance curve interpolators -----------------------------
         self._throughput_interp = _scipy_to_interpax(yippy_coro.throughput_interp)
         self._log_contrast_interp = _scipy_to_interpax(yippy_coro._log_contrast_interp)
         self._occ_trans_interp = _scipy_to_interpax(yippy_coro.occ_trans_interp)
@@ -212,10 +214,29 @@ class EqxCoronagraph(eqx.Module):
             yippy_coro.core_intensity_interp
         )
 
-        # ── Sky transmission ────────────────────────────────────────────
+        # 2D core mean intensity (separation x stellar_diam) when available
+        if yippy_coro.core_intensity_interp_2d is not None:
+            rgi = yippy_coro.core_intensity_interp_2d
+            # RegularGridInterpolator stores grid points in .grid
+            sep_knots = jnp.asarray(rgi.grid[0], dtype=jnp.float32)
+            diam_knots = jnp.asarray(rgi.grid[1], dtype=jnp.float32)
+            values_2d = jnp.asarray(rgi.values, dtype=jnp.float32)
+            self._core_mean_intensity_interp_2d = interpax.Interpolator2D(
+                sep_knots,
+                diam_knots,
+                values_2d,
+                method="linear",
+                extrap=False,  # returns NaN out-of-bounds
+            )
+            self._has_2d_core_intensity = True
+        else:
+            self._core_mean_intensity_interp_2d = None
+            self._has_2d_core_intensity = False
+
+        # -- Sky transmission --------------------------------------------
         self.sky_trans = jnp.asarray(yippy_coro.sky_trans(), dtype=jnp.float32)
 
-        # ── Optional PSF datacube ───────────────────────────────────────
+        # -- Optional PSF datacube ---------------------------------------
         if ensure_psf_datacube:
             if not yippy_coro.has_psf_datacube:
                 yippy_coro.create_psf_datacube()
@@ -229,13 +250,13 @@ class EqxCoronagraph(eqx.Module):
         else:
             self.psf_datacube = None
 
-    # ── Public methods (all JIT-traceable) ───────────────────────────────
+    # -- Public methods (all JIT-traceable) -------------------------------
 
     def stellar_intens(self, stellar_diam_lod: float) -> Array:
         """Interpolate the stellar intensity map for a given stellar diameter.
 
         Args:
-            stellar_diam_lod: Stellar diameter in λ/D (unitless float).
+            stellar_diam_lod: Stellar diameter in lam/D (unitless float).
 
         Returns:
             2-D JAX array containing the stellar intensity map.
@@ -246,7 +267,7 @@ class EqxCoronagraph(eqx.Module):
         """Evaluate coronagraph throughput at the given separation.
 
         Args:
-            separation_lod: Separation from the star in λ/D.
+            separation_lod: Separation from the star in lam/D.
 
         Returns:
             Scalar throughput value.
@@ -257,7 +278,7 @@ class EqxCoronagraph(eqx.Module):
         """Evaluate raw contrast at the given separation (log-space interpolation).
 
         Args:
-            separation_lod: Separation from the star in λ/D.
+            separation_lod: Separation from the star in lam/D.
 
         Returns:
             Scalar raw contrast value.
@@ -310,7 +331,7 @@ class EqxCoronagraph(eqx.Module):
         """Evaluate occulter transmission at the given separation.
 
         Args:
-            separation_lod: Separation from the star in λ/D.
+            separation_lod: Separation from the star in lam/D.
 
         Returns:
             Scalar occulter transmission value.
@@ -321,26 +342,36 @@ class EqxCoronagraph(eqx.Module):
         """Evaluate core area at the given separation.
 
         Args:
-            separation_lod: Separation from the star in λ/D.
+            separation_lod: Separation from the star in lam/D.
 
         Returns:
-            Scalar core area value in (λ/D)².
+            Scalar core area value in (lam/D)**2.
         """
         return self._core_area_interp(separation_lod)
 
-    def core_mean_intensity(self, separation_lod: float) -> Array:
+    def core_mean_intensity(
+        self, separation_lod: float, stellar_diam_lod: float = 0.0
+    ) -> Array:
         """Evaluate core mean intensity at the given separation.
 
+        Uses the 1D spline for the default diameter (point source) and
+        the 2D interpolant for non-default stellar diameters when
+        available.
+
         Args:
-            separation_lod: Separation from the star in λ/D.
+            separation_lod: Separation from the star in lambda/D.
+            stellar_diam_lod: Stellar angular diameter in lambda/D.
+                Default is 0.0 (point source).
 
         Returns:
             Scalar core mean intensity value.
         """
+        if stellar_diam_lod != 0.0 and self._has_2d_core_intensity:
+            return self._core_mean_intensity_interp_2d(separation_lod, stellar_diam_lod)
         return self._core_mean_intensity_interp(separation_lod)
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# -- Helpers ------------------------------------------------------------------
 
 
 def _scipy_to_interpax(scipy_spline):
