@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.1.0](https://github.com/CoreySpohn/yippy/compare/v2.0.1...v2.1.0) (2026-02-26)
+
+
+### Features
+
+* Add testing, fix lint issue ([a530990](https://github.com/CoreySpohn/yippy/commit/a5309908c2a03d6d0a78ec2cf6a174556d3ceb39))
+
+
+### Bug Fixes
+
+* Set minimum jax version ([89a5b38](https://github.com/CoreySpohn/yippy/commit/89a5b3848fbf90e3549a362a8e15bd807468ea20))
+
 ## [2.0.1](https://github.com/CoreySpohn/yippy/compare/v2.0.0...v2.0.1) (2026-02-25)
 
 
