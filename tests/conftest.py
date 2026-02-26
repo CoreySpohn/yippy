@@ -7,8 +7,8 @@ from yippy import Coronagraph
 
 @pytest.fixture(scope="session")
 def coro():
-    """Session-scoped real coronagraph loaded from coronalyze's pooch data."""
-    from coronalyze.datasets import fetch_coronagraph
+    """Session-scoped real coronagraph loaded from yippy's pooch registry."""
+    from yippy.datasets import fetch_coronagraph
 
     yip_path = fetch_coronagraph()
     return Coronagraph(yip_path)
