@@ -12,7 +12,7 @@ dependencies = [
   "hwoutils",
   "lod_unit",
   "tqdm",
-  "jax",
+  "jax>=0.8.1",
   "equinox",
   "interpax",
   "jaxtyping",
