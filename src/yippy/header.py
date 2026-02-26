@@ -2,7 +2,6 @@
 
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 import astropy.units as u
 from astropy.io import fits
@@ -29,20 +28,20 @@ class HeaderData:
     naxis2: int
     naxis3: int
     design: str
-    diameter: Optional[u.Quantity] = None
-    diameter_inscribed: Optional[u.Quantity] = None
-    pixscale: Optional[u.Quantity] = None
-    lambda0: Optional[u.Quantity] = None
-    minlam: Optional[u.Quantity] = None
-    maxlam: Optional[u.Quantity] = None
-    xcenter: Optional[float] = None
-    ycenter: Optional[float] = None
-    obscured: Optional[float] = None
-    jitter: Optional[u.Quantity] = None
-    n_lam: Optional[int] = None
-    n_star: Optional[int] = None
-    zernike: Optional[str] = None
-    wfe: Optional[u.Quantity] = None
+    diameter: u.Quantity | None = None
+    diameter_inscribed: u.Quantity | None = None
+    pixscale: u.Quantity | None = None
+    lambda0: u.Quantity | None = None
+    minlam: u.Quantity | None = None
+    maxlam: u.Quantity | None = None
+    xcenter: float | None = None
+    ycenter: float | None = None
+    obscured: float | None = None
+    jitter: u.Quantity | None = None
+    n_lam: int | None = None
+    n_star: int | None = None
+    zernike: str | None = None
+    wfe: u.Quantity | None = None
 
     @staticmethod
     def extract_unit(comment: str, default_unit: u.Unit, key: str) -> u.Unit:
