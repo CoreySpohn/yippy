@@ -32,7 +32,7 @@ class TestScipyToInterpax:
         scipy_spl, x, y = sine_spline
         interpax_spl = _scipy_to_interpax(scipy_spl)
 
-        for xi, yi in zip(x, y):
+        for xi, yi in zip(x, y, strict=True):
             val = float(interpax_spl(jnp.float32(xi)))
             np.testing.assert_allclose(val, yi, rtol=1e-4, atol=1e-6)
 
