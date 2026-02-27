@@ -1,5 +1,9 @@
-"""Base class for all offax_psfs.fits files."""
+"""Base class for all offax_psfs.fits files.
 
+This has been deprecated. Please use OffJAX instead.
+"""
+
+import warnings
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -16,10 +20,18 @@ from .logger import logger
 
 
 class OffAx:
-    """Class for handling off-axis PSFs in pure Python.
+    """Base class for off-axis PSF handling.
+
+    Handles YIP data loading, offset parsing, and symmetry detection.
+    ``OffJAX`` inherits from this class and overrides ``create_psf`` /
+    ``create_psfs`` with JAX-accelerated implementations.
+
+    The pure-Python ``create_psf`` and ``create_psfs`` methods on this class
+    are retained as a reference implementation but are not used in production.
+    All ``Coronagraph`` instances now use ``OffJAX`` exclusively.
 
     This class loads and processes PSF data from the yield input package (YIP).
-    It currently supports oneD and quater symmetric PSF YIPs. The primary use
+    It currently supports oneD and quarter symmetric PSF YIPs. The primary use
     is to interpolate the PSF data to a given x/y position. This is done by
     calling the OffAx object with the x/y position as arguments, which itself
     calls the psf object after converting units.
@@ -248,7 +260,11 @@ class OffAx:
         return None
 
     def create_psf(self, x: float, y: float):
-        """Creates and returns the PSF at the specified off-axis position.
+        """Create and return the PSF at the specified off-axis position.
+
+        .. deprecated::
+            The pure-Python implementation is deprecated.  Use
+            ``Coronagraph`` (which uses ``OffJAX``) instead.
 
         Interpolates and returns the Point Spread Function (PSF) at the specified
         off-axis position (x, y). If the exact (x, y) position matches one of the
@@ -280,6 +296,11 @@ class OffAx:
             for each pixel.
 
         """
+        warnings.warn(
+            "OffAx.create_psf is deprecated; use Coronagraph (OffJAX) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         # Set default values
         flip_lr, flip_ud = False, False
 
@@ -387,7 +408,17 @@ class OffAx:
         return psf
 
     def create_psfs(self, x: NDArray, y: NDArray) -> NDArray:
-        """Creates and returns the PSFs at the specified off-axis positions."""
+        """Create and return the PSFs at the specified off-axis positions.
+
+        .. deprecated::
+            The pure-Python implementation is deprecated.  Use
+            ``Coronagraph`` (which uses ``OffJAX``) instead.
+        """
+        warnings.warn(
+            "OffAx.create_psfs is deprecated; use Coronagraph (OffJAX) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         psfs = np.empty((len(x), *self.flat_psfs.shape[1:]))
         for i in range(len(x)):
             psfs[i] = self.create_psf(x[i], y[i])
@@ -403,6 +434,10 @@ class OffAx:
         workers: int = 4,
     ) -> np.ndarray:
         """Compute PSFs for batches of (x, y) arrays using multiprocessing.
+
+        .. deprecated::
+            The pure-Python implementation is deprecated.  Use
+            ``Coronagraph`` (which uses ``OffJAX``) instead.
 
         Args:
             x (np.ndarray):

@@ -13,7 +13,7 @@ Usage::
 
     # Or from an existing yippy Coronagraph
     from yippy import Coronagraph
-    yippy_coro = Coronagraph("/path/to/yip", use_jax=True)
+    yippy_coro = Coronagraph("/path/to/yip")
     coro = EqxCoronagraph(yippy_coro=yippy_coro)
 
 All methods on ``EqxCoronagraph`` are JIT-traceable.  Downstream code should
@@ -32,16 +32,15 @@ accept an ``EqxCoronagraph`` as input::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import equinox as eqx
 import interpax
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jaxtyping import Array
 
-if TYPE_CHECKING:
-    from .coronagraph import Coronagraph as YippyCoronagraph
+from .coronagraph import Coronagraph
 
 
 class EqxCoronagraph(eqx.Module):
@@ -109,7 +108,7 @@ class EqxCoronagraph(eqx.Module):
         self,
         yip_path: str | Path | None = None,
         *,
-        yippy_coro: YippyCoronagraph | None = None,
+        yippy_coro: Coronagraph | None = None,
         ensure_psf_datacube: bool = False,
         # Forwarded to yippy.Coronagraph when building from yip_path
         cpu_cores: int = 4,
@@ -150,21 +149,14 @@ class EqxCoronagraph(eqx.Module):
                 Whether off-axis PSFs are symmetric about the y-axis (forwarded).
 
         Raises:
-            ValueError: If neither ``yip_path`` nor ``yippy_coro`` is provided,
-                or if the Coronagraph was not initialised with ``use_jax=True``.
+            ValueError: If neither ``yip_path`` nor ``yippy_coro`` is provided.
         """
-        # Delayed import to avoid circular dependency at module level
-        from .coronagraph import Coronagraph as YippyCoro
-        from .offjax import OffJAX
-
-        # -- Build or validate the source Coronagraph --------------------
         if yippy_coro is None and yip_path is None:
             raise ValueError("Provide either yip_path or yippy_coro")
 
         if yippy_coro is None:
-            yippy_coro = YippyCoro(
+            yippy_coro = Coronagraph(
                 yip_path,
-                use_jax=True,
                 cpu_cores=cpu_cores,
                 downsample_shape=downsample_shape,
                 aperture_radius_lod=aperture_radius_lod,
@@ -172,12 +164,6 @@ class EqxCoronagraph(eqx.Module):
                 x_symmetric=x_symmetric,
                 y_symmetric=y_symmetric,
                 use_inscribed_diameter=use_inscribed_diameter,
-            )
-
-        if not isinstance(yippy_coro.offax, OffJAX):
-            raise ValueError(
-                "yippy Coronagraph must be initialised with use_jax=True "
-                "to create an EqxCoronagraph"
             )
 
         # -- Scalar metadata ---------------------------------------------
@@ -390,8 +376,6 @@ def _scipy_to_interpax(scipy_spline):
     Returns:
         An interpax interpolator that approximates the same function.
     """
-    import numpy as np
-
     # Extract the unique interior knots (stripping the k+1 padded boundary
     # knots from each end).  For make_interp_spline the interior knots
     # exactly equal the original x data.

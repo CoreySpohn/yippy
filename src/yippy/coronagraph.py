@@ -14,7 +14,6 @@ from ._version import __version__
 from .export import export_ayo_csv
 from .header import HeaderData
 from .logger import logger
-from .offax import OffAx
 from .offjax import OffJAX
 from .performance import (
     _build_perf_interps,
@@ -50,7 +49,6 @@ class Coronagraph:
     def __init__(
         self,
         yip_path: Path,
-        use_jax: bool = True,
         stellar_intens_file: str = "stellar_intens.fits",
         stellar_diam_file: str = "stellar_intens_diam_list.fits",
         offax_data_file: str = "offax_psf.fits",
@@ -79,8 +77,6 @@ class Coronagraph:
                     offax_psf_offset_list - The off-axis PSF list
                     offax_psf - PSF of off-axis sources
                     sky_trans - Sky transmission data
-            use_jax (bool):
-                Whether to use JAX for optimized computation. Default is True.
             stellar_intens_file (str):
                 Name of the stellar intensity file. Default is stellar_intens.fits
             stellar_diam_file (str):
@@ -183,27 +179,16 @@ class Coronagraph:
         )
 
         # Offaxis PSF of the planet as function of separation from the star
-        if use_jax:
-            self.offax = OffJAX(
-                yip_path,
-                offax_data_file,
-                offax_offsets_file,
-                self.pixel_scale,
-                x_symmetric,
-                y_symmetric,
-                cpu_cores,
-                downsample_shape=downsample_shape,
-            )
-        else:
-            self.offax = OffAx(
-                yip_path,
-                offax_data_file,
-                offax_offsets_file,
-                self.pixel_scale,
-                x_symmetric,
-                y_symmetric,
-                downsample_shape=downsample_shape,
-            )
+        self.offax = OffJAX(
+            yip_path,
+            offax_data_file,
+            offax_offsets_file,
+            self.pixel_scale,
+            x_symmetric,
+            y_symmetric,
+            cpu_cores,
+            downsample_shape=downsample_shape,
+        )
 
         # Update pixel_scale if downsampling was applied
         if downsample_shape is not None:
@@ -211,9 +196,6 @@ class Coronagraph:
 
         # Get the sky_trans mask
         self.sky_trans = SkyTrans(yip_path, sky_trans_file)
-
-        # Store use_jax for later use
-        self.use_jax = use_jax
 
         # PSF datacube here is a 4D array of PSFs at each pixel (x psf offset,
         # y psf offset, x, y). Given the computational cost of generating this
@@ -330,7 +312,7 @@ class Coronagraph:
 
         # Move datacube to GPU/TPU device if conditions are met
         backend = jax.default_backend().lower()
-        if self.use_quarter_psf_datacube and self.use_jax and backend in ("gpu", "tpu"):
+        if self.use_quarter_psf_datacube and backend in ("gpu", "tpu"):
             # Check if already a JAX array on the target device
             target_device = jax.devices(backend)[0]
             already_on_device = (
