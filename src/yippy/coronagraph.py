@@ -17,19 +17,24 @@ from .logger import logger
 from .offax import OffAx
 from .offjax import OffJAX
 from .performance import (
-    compute_all_performance_curves as _compute_all_perf,
-)
-from .performance import (
+    _build_perf_interps,
+    _compute_iwa_owa,
     compute_core_area_curve,
     compute_core_mean_intensity_curve,
     compute_occ_trans_curve,
     compute_radial_average,
     compute_raw_contrast_curve,
     compute_throughput_curve,
+    compute_truncation_core_area_curve,
+    compute_truncation_throughput_curve,
     plot_performance_curve,
+)
+from .performance import (
+    compute_all_performance_curves as _compute_all_perf,
 )
 from .sky_trans import SkyTrans
 from .stellar_intens import StellarIntens
+from .util import load_coro_performance_from_fits, save_coro_performance_to_fits
 
 
 class Coronagraph:
@@ -222,25 +227,22 @@ class Coronagraph:
         assert self.psf_shape[0] == self.psf_shape[1], "PSF must be square"
         self.npixels = self.psf_shape[0]
 
-        # Append the version number to the performance file name
-        performance_file = f"{performance_file}_v{__version__}.fits"
+        self.interp_order = interp_order
 
-        # Get the contrast and throughput
-        # Performance curves work for both 1D and 2D coronagraphs since we
-        # only use PSFs along the x-axis (where y=0)
-        perf_path = Path(self.yip_path, performance_file)
-        if perf_path.exists() and self.psf_trunc_ratio is None:
-            # Performance file exists and no custom truncation ratio - load it
-            logger.info(f"Loading performance metrics from {performance_file}")
+        perf_file = self._perf_filename()
+        perf_path = self._perf_dir / perf_file
+
+        if perf_path.exists():
+            logger.info(f"Loading performance metrics from {perf_path}")
             self.compute_all_performance_curves(
                 aperture_radius_lod=self.aperture_radius_lod,
                 save_to_fits=False,
-                load_from_file=performance_file,
+                load_from_file=perf_file,
+                cache_dir=self._perf_dir,
                 plot=False,
                 interp_order=interp_order,
             )
         else:
-            # Either no performance file or custom truncation ratio - compute
             if self.psf_trunc_ratio is not None:
                 logger.info(
                     f"Computing performance with PSF trunc ratio "
@@ -253,8 +255,9 @@ class Coronagraph:
                 )
             self.compute_all_performance_curves(
                 aperture_radius_lod=self.aperture_radius_lod,
-                save_to_fits=self.psf_trunc_ratio is None,
-                performance_file=performance_file,
+                save_to_fits=True,
+                performance_file=perf_file,
+                cache_dir=self._perf_dir,
                 plot=False,
                 psf_trunc_ratio=self.psf_trunc_ratio,
                 interp_order=interp_order,
@@ -275,7 +278,7 @@ class Coronagraph:
                 Number of PSFs to generate in each batch. Default is 128.
         """
         ext = "_quarter" if self.use_quarter_psf_datacube else ""
-        datacube_path = Path(self.yip_path, f"psf_datacube{ext}.npy")
+        datacube_path = self._cache_dir / f"psf_datacube{ext}.npy"
         if datacube_path.exists():
             logger.info(f"Loading PSF datacube from {datacube_path}.")
             psfs = jnp.load(datacube_path)
@@ -392,6 +395,72 @@ class Coronagraph:
 
         return base_str
 
+    @property
+    def _cache_dir(self) -> Path:
+        """Directory for all yippy-computed artifacts."""
+        d = self.yip_path / "yippy_cache"
+        d.mkdir(exist_ok=True)
+        return d
+
+    @property
+    def _perf_dir(self) -> Path:
+        """Directory for cached performance curve FITS files."""
+        d = self._cache_dir / "performance"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def _perf_filename(self) -> str:
+        """Build a performance cache filename encoding the aperture mode."""
+        if self.psf_trunc_ratio is not None:
+            return f"trunc_{self.psf_trunc_ratio:.2f}_v{__version__}.fits"
+        return f"aper_{self.aperture_radius_lod:.2f}_v{__version__}.fits"
+
+    def set_psf_trunc_ratio(self, ratio: float) -> None:
+        """Switch PSF truncation ratio, recomputing only the affected curves.
+
+        Throughput and core area curves depend on the truncation ratio.
+        Contrast, occulter transmission, and core mean intensity do not.
+        Results are cached to ``yippy_cache/performance/`` for reuse.
+
+        Args:
+            ratio: PSF truncation ratio (e.g. 0.3).
+        """
+        self.psf_trunc_ratio = ratio
+        perf_file = self._perf_filename()
+        perf_path = self._perf_dir / perf_file
+
+        if perf_path.exists():
+            logger.info(f"Loading cached performance for trunc_ratio={ratio:.2f}")
+            sep, throughput, raw_contrast = load_coro_performance_from_fits(
+                perf_file, self._perf_dir
+            )
+        else:
+            logger.info(
+                f"Computing throughput + core area for trunc_ratio={ratio:.2f}..."
+            )
+            sep, throughput = compute_truncation_throughput_curve(
+                self, psf_trunc_ratio=ratio
+            )
+            raw_contrast = np.array([self.raw_contrast(s) for s in sep])
+            save_coro_performance_to_fits(
+                sep, throughput, raw_contrast, perf_file, self._perf_dir
+            )
+
+        sep_ca, core_area = compute_truncation_core_area_curve(
+            self, psf_trunc_ratio=ratio
+        )
+
+        _build_perf_interps(
+            self, sep, throughput, raw_contrast, sep_ca, core_area, self.interp_order
+        )
+
+        _compute_iwa_owa(self, sep, throughput)
+
+        logger.info(
+            f"Switched to trunc_ratio={ratio:.2f} "
+            f"(IWA={self.IWA:.2f}, OWA={self.OWA:.2f})"
+        )
+
     # ------------------------------------------------------------------
     # Performance curve computation (delegates to yippy.performance)
     # ------------------------------------------------------------------
@@ -427,6 +496,7 @@ class Coronagraph:
         save_to_fits=True,
         performance_file="coro_perf.fits",
         load_from_file=None,
+        cache_dir=None,
         plot=False,
         psf_trunc_ratio=None,
         interp_order=1,
@@ -445,6 +515,7 @@ class Coronagraph:
             save_to_fits=save_to_fits,
             performance_file=performance_file,
             load_from_file=load_from_file,
+            cache_dir=cache_dir,
             plot=plot,
             psf_trunc_ratio=psf_trunc_ratio,
             interp_order=interp_order,
@@ -801,15 +872,13 @@ class Coronagraph:
         r_flat = r.ravel()
         if psf_trunc_ratios is None:
             return np.asarray(self.throughput_interp(r_flat)).reshape(r.shape)
+        original_ratio = self.psf_trunc_ratio
         maps = []
         for ratio in psf_trunc_ratios:
-            temp = Coronagraph(
-                self.yip_path,
-                psf_trunc_ratio=ratio,
-                use_jax=self.use_jax,
-                interp_order=1,
-            )
-            maps.append(np.asarray(temp.throughput_interp(r_flat)).reshape(r.shape))
+            self.set_psf_trunc_ratio(ratio)
+            maps.append(np.asarray(self.throughput_interp(r_flat)).reshape(r.shape))
+        if original_ratio is not None:
+            self.set_psf_trunc_ratio(original_ratio)
         return np.stack(maps, axis=-1)
 
     def core_area_map(self, psf_trunc_ratios=None):
@@ -828,15 +897,13 @@ class Coronagraph:
         r_flat = r.ravel()
         if psf_trunc_ratios is None:
             return np.asarray(self.core_area_interp(r_flat)).reshape(r.shape)
+        original_ratio = self.psf_trunc_ratio
         maps = []
         for ratio in psf_trunc_ratios:
-            temp = Coronagraph(
-                self.yip_path,
-                psf_trunc_ratio=ratio,
-                use_jax=self.use_jax,
-                interp_order=1,
-            )
-            maps.append(np.asarray(temp.core_area_interp(r_flat)).reshape(r.shape))
+            self.set_psf_trunc_ratio(ratio)
+            maps.append(np.asarray(self.core_area_interp(r_flat)).reshape(r.shape))
+        if original_ratio is not None:
+            self.set_psf_trunc_ratio(original_ratio)
         return np.stack(maps, axis=-1)
 
     # ------------------------------------------------------------------

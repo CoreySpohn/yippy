@@ -13,6 +13,7 @@ delegation methods on it.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import astropy.units as u
@@ -543,6 +544,26 @@ def compute_core_mean_intensity_curve(
 
 
 # ---------------------------------------------------------------------------
+# Interpolator builder (shared by compute_all_performance_curves and
+# Coronagraph.set_psf_trunc_ratio)
+# ---------------------------------------------------------------------------
+
+
+def _build_perf_interps(
+    coro, sep, throughput, raw_contrast, sep_ca, core_area, interp_order
+):
+    """Assign throughput, contrast, and core area spline interpolators to *coro*."""
+    coro.interp_order = interp_order
+    coro.throughput_interp = make_interp_spline(sep, throughput, k=interp_order)
+
+    log_contrast = np.log10(np.abs(raw_contrast) + 1e-20)
+    coro._log_contrast_interp = make_interp_spline(sep, log_contrast, k=interp_order)
+    coro.raw_contrast_interp = make_interp_spline(sep, raw_contrast, k=interp_order)
+
+    coro.core_area_interp = make_interp_spline(sep_ca, core_area, k=interp_order)
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -557,6 +578,7 @@ def compute_all_performance_curves(
     save_to_fits: bool = True,
     performance_file: str = "coro_perf.fits",
     load_from_file: str | None = None,
+    cache_dir: Path | None = None,
     plot: bool = False,
     psf_trunc_ratio: float | None = None,
     interp_order: int = 1,
@@ -573,6 +595,9 @@ def compute_all_performance_curves(
     if stellar_diam is None:
         stellar_diam = coro.stellar_intens.diams[0]
 
+    # Resolve the directory for save/load operations
+    io_dir = cache_dir if cache_dir is not None else coro.yip_path
+
     # ------------------------------------------------------------------
     # Throughput + contrast: load from file or compute
     # ------------------------------------------------------------------
@@ -581,7 +606,7 @@ def compute_all_performance_curves(
         logger.info(f"Loading throughput and contrast from {load_from_file}")
         try:
             sep, throughput, raw_contrast = load_coro_performance_from_fits(
-                load_from_file, coro.yip_path
+                load_from_file, io_dir
             )
             loaded = True
             logger.info(f"Successfully loaded performance data from {load_from_file}")
@@ -614,20 +639,13 @@ def compute_all_performance_curves(
 
         if save_to_fits:
             save_coro_performance_to_fits(
-                sep, throughput, raw_contrast, performance_file, coro.yip_path
+                sep, throughput, raw_contrast, performance_file, io_dir
             )
 
     # Apply contrast floor
     if coro.contrast_floor is not None:
         raw_contrast = np.maximum(np.abs(raw_contrast), coro.contrast_floor)
         logger.info(f"Applied contrast floor of {coro.contrast_floor:.1e}")
-
-    # Splines for throughput and contrast (default linear, matching AYO)
-    coro.interp_order = interp_order
-    coro.throughput_interp = make_interp_spline(sep, throughput, k=interp_order)
-    log_contrast = np.log10(np.abs(raw_contrast) + 1e-20)
-    coro._log_contrast_interp = make_interp_spline(sep, log_contrast, k=interp_order)
-    coro.raw_contrast_interp = make_interp_spline(sep, raw_contrast, k=interp_order)
 
     # ------------------------------------------------------------------
     # Core area
@@ -648,7 +666,10 @@ def compute_all_performance_curves(
             use_phot_aperture_as_min=use_phot_aperture_as_min,
             oversample=oversample,
         )
-    coro.core_area_interp = make_interp_spline(sep_ca, core_area, k=interp_order)
+
+    _build_perf_interps(
+        coro, sep, throughput, raw_contrast, sep_ca, core_area, interp_order
+    )
 
     # ------------------------------------------------------------------
     # Occulter transmission
