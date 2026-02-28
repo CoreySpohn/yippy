@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/CoreySpohn/yippy/compare/v2.2.0...v2.2.1) (2026-02-28)
+
+
+### Bug Fixes
+
+* Removing incorrect function in fft methods ([8c7909e](https://github.com/CoreySpohn/yippy/commit/8c7909e22c93c90defff1f41f095b413bb1c717f))
+
 ## [2.2.0](https://github.com/CoreySpohn/yippy/compare/v2.1.0...v2.2.0) (2026-02-27)
 
 
