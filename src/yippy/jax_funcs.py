@@ -32,7 +32,7 @@ def get_pad_info(image, pad_factor):
     return n_pixels_orig, n_pad, img_edge, n_pixels_final
 
 
-def fft_shift_x(image, shift_pixels, phasor):
+def fft_shift_x(image, shift_pixels, phasor, clamp=True):
     """Apply a Fourier shift to an image along the x axis.
 
     A traceable version of the `fft_shift_1d` function that applies a Fourier
@@ -46,6 +46,9 @@ def fft_shift_x(image, shift_pixels, phasor):
             The number of pixels by which to shift the image along the specified axis.
         phasor (jax.numpy.ndarray):
             Precomputed components for the Fourier shift (exp(-2j * pi * fft_freqs)).
+        clamp (bool):
+            If True, clamp negative values to zero after the shift.
+            Default is True.
 
     Returns:
         jax.numpy.ndarray:
@@ -76,10 +79,12 @@ def fft_shift_x(image, shift_pixels, phasor):
     # Cut any negative values to zero. This occurs in the region with no
     # information in the original image (e.g. the left pixels when moving
     # a PSF rightwards)
-    return jnp.maximum(image, 0.0)
+    if clamp:
+        return jnp.maximum(image, 0.0)
+    return image
 
 
-def fft_shift_y(image, shift_pixels, phasor):
+def fft_shift_y(image, shift_pixels, phasor, clamp=True):
     """Apply a Fourier shift to an image along the y axis.
 
     A traceable version of the `fft_shift_1d` function that applies a Fourier
@@ -93,6 +98,9 @@ def fft_shift_y(image, shift_pixels, phasor):
             The number of pixels by which to shift the image along the specified axis.
         phasor (jax.numpy.ndarray):
             Precomputed components for the Fourier shift (exp(-2j * pi * fft_freqs)).
+        clamp (bool):
+            If True, clamp negative values to zero after the shift.
+            Default is True.
 
     Returns:
         jax.numpy.ndarray:
@@ -123,7 +131,9 @@ def fft_shift_y(image, shift_pixels, phasor):
     # Cut any negative values to zero. This occurs in the region with no
     # information in the original image (e.g. the left pixels when moving
     # a PSF rightwards)
-    return jnp.maximum(image, 0.0)
+    if clamp:
+        return jnp.maximum(image, 0.0)
+    return image
 
 
 def create_shift_mask(psf, shift_x, shift_y, x_grid, y_grid, fill_val=1):
@@ -537,7 +547,7 @@ def fft_rotate_jax(image, rot_deg):
     # Cut the angle to (-45, 45] and a number of 90-degree rotations
     rot_deg, n_rot = decompose_angle_jax(rot_deg)
 
-    image = rot90_helper_jax(image, n_rot)
+    image = rot90_traceable(image, k=n_rot)
 
     image = lax.cond(
         rot_deg != 0.0,
@@ -780,44 +790,6 @@ def rot90_traceable(m, k=1, axes=(0, 1)):
     """
     k %= 4
     return lax.switch(k, [partial(jnp.rot90, m, k=i, axes=axes) for i in range(4)])
-
-
-def rot90_helper_jax(image, n_rot):
-    """Rotate an image by 90 degrees a specified number of times.
-
-    Ensures that the image is of odd dimensions before rotating to avoid
-    incorrect centering. Uses JAX operations.
-
-    Args:
-        image (jax.numpy.ndarray):
-            The input image to be rotated.
-        n_rot (int):
-            The number of 90-degree rotations to apply.
-
-    Returns:
-        jax.numpy.ndarray:
-            The rotated image.
-    """
-    # Check if the image needs padding for even dimensions
-    needs_padding = jnp.logical_or(image.shape[0] % 2 == 0, image.shape[1] % 2 == 0)
-
-    def pad_and_rotate(img, n_rot):
-        padded = jnp.zeros((img.shape[0] + 1, img.shape[1] + 1))
-        padded = padded.at[:-1, :-1].set(img)
-        rotated = rot90_traceable(padded, k=n_rot)
-        return rotated[:-1, :-1]
-
-    def rotate_only(img, n_rot):
-        return rot90_traceable(img, k=n_rot)
-
-    _img = lax.cond(
-        needs_padding,
-        lambda img: pad_and_rotate(img, n_rot),
-        lambda img: rotate_only(img, n_rot),
-        image,
-    )
-
-    return _img
 
 
 def synthesize_psf_separable(
