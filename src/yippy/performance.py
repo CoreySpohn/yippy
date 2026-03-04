@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import astropy.units as u
 import jax.numpy as jnp
 import numpy as np
 from hwoutils.constants import GAUSSIAN_FWHM_FACTOR
@@ -74,9 +73,11 @@ def _iter_xaxis_positions(coro: Coronagraph):
 
     max_sep = None
     if hasattr(coro.offax, "max_offset_in_image"):
-        max_sep = coro.offax.max_offset_in_image.to(u.lod).value
+        max_sep = coro.offax.max_offset_in_image.to(lod).value
 
     for i, x_lod_val in enumerate(np.array(coro.offax.x_offsets)):
+        if x_lod_val < 0:
+            continue
         r = abs(x_lod_val)
         if max_sep is not None and r > max_sep:
             continue
@@ -167,7 +168,7 @@ def _compute_iwa_owa(
     if hasattr(coro.offax, "max_offset_in_image"):
         coro.OWA = coro.offax.max_offset_in_image
         logger.info(
-            f"OWA set to max_offset_in_image: {coro.OWA.to(u.lod).value:.2f} lam/D"
+            f"OWA set to max_offset_in_image: {coro.OWA.to(lod).value:.2f} lam/D"
         )
     else:
         coro.OWA = np.max(sep) * lod

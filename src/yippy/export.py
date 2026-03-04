@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import astropy.io.fits as pyfits
 import astropy.units as u
 import numpy as np
+from lod_unit import lod
 
 from .logger import logger
 from .performance import compute_radial_average
@@ -179,7 +180,7 @@ def export_exosims(
     x_offsets = np.array(coro.offax.x_offsets)
     separations = np.abs(x_offsets)
     if hasattr(coro.offax, "max_offset_in_image"):
-        max_sep = coro.offax.max_offset_in_image.to(u.lod).value
+        max_sep = coro.offax.max_offset_in_image.to(lod).value
         separations = separations[separations <= max_sep]
     separations = np.sort(np.unique(separations))
 
@@ -257,8 +258,8 @@ def export_exosims(
         IWA_output = (IWA * angunit).to(u.arcsec).value
         OWA_output = (OWA * angunit).to(u.arcsec).value
     else:
-        IWA_output = IWA.to_value(u.lod)
-        OWA_output = OWA.to_value(u.lod)
+        IWA_output = IWA.to_value(lod)
+        OWA_output = OWA.to_value(lod)
 
     # Core area filename or scalar
     core_area_fname = (

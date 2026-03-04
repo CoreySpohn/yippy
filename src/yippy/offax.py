@@ -11,10 +11,12 @@ import astropy.io.fits as pyfits
 import astropy.units as u
 import numpy as np
 from astropy.units import Quantity
+from hwoutils.fft import fft_shift
 from hwoutils.transforms import downsample_psfs
+from lod_unit import lod
 from numpy.typing import NDArray
 
-from yippy.util import convert_to_lod, create_shift_mask, fft_shift
+from yippy.util import convert_to_lod, create_shift_mask
 
 from .logger import logger
 
@@ -460,12 +462,12 @@ class OffAx:
         """
         if isinstance(x, Quantity):
             # Convert the x and y positions to lambda/D if they are in pixels
-            if x.unit != u.lod:
+            if x.unit != lod:
                 x = convert_to_lod(x, self.center_x, self.pixel_scale, lam, D, dist)
             else:
                 x = x.value
         if isinstance(y, Quantity):
-            if y.unit != u.lod:
+            if y.unit != lod:
                 y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
             else:
                 y = y.value
@@ -520,11 +522,11 @@ class OffAx:
         """
         if isinstance(x, Quantity):
             # Convert the x and y positions to lambda/D if they are in pixels
-            if x.unit != u.lod:
+            if x.unit != lod:
                 x = convert_to_lod(x, self.center_x, self.pixel_scale, lam, D, dist)
             x = x.value
         if isinstance(y, Quantity):
-            if y.unit != u.lod:
+            if y.unit != lod:
                 y = convert_to_lod(y, self.center_y, self.pixel_scale, lam, D, dist)
             y = y.value
 
