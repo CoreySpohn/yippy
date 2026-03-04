@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.2](https://github.com/CoreySpohn/yippy/compare/v2.2.1...v2.2.2) (2026-03-04)
+
+
+### Bug Fixes
+
+* Fully switch to using lod_unit.lod explicitly instead of relying on the astropy.units registry entry for lod, offload more to hwoutils ([951133e](https://github.com/CoreySpohn/yippy/commit/951133e233196d8c10659ab6731b89ce73aba71f))
+
 ## [2.2.1](https://github.com/CoreySpohn/yippy/compare/v2.2.0...v2.2.1) (2026-02-28)
 
 
