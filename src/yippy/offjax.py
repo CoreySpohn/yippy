@@ -12,7 +12,6 @@ from jax.sharding import PartitionSpec as P
 from lod_unit import lod
 
 from .jax_funcs import synthesize_psf_idw, synthesize_psf_separable
-from .logger import logger
 from .offax import OffAx
 
 
@@ -43,7 +42,6 @@ class OffJAX(OffAx):
         pixel_scale: Quantity,
         x_symmetric: bool,
         y_symmetric: bool,
-        cpu_cores: int = 4,
         downsample_shape: tuple[int, int] | None = None,
     ) -> None:
         """Initializes the OffJAX class by casting YIP data to JAX arrays.
@@ -61,10 +59,6 @@ class OffJAX(OffAx):
                 Whether the PSFs are symmetric in x.
             y_symmetric:
                 Whether the PSFs are symmetric in y.
-            cpu_cores:
-                Number of CPU cores for parallel PSF generation.
-                Must match the value passed to
-                ``hwoutils.set_host_device_count()`` at startup.
             downsample_shape:
                 Optional target shape (ny, nx) to downsample PSFs to.
                 If provided, all PSFs will be resampled to this shape
@@ -79,7 +73,6 @@ class OffJAX(OffAx):
             y_symmetric,
             downsample_shape=downsample_shape,
         )
-        self.cpu_cores = cpu_cores
 
         ##############
         # Convert the PSF data to JAX arrays
@@ -217,17 +210,7 @@ class OffJAX(OffAx):
         program startup to expose *N* CPU devices to JAX.
         """
         n_devices = jax.device_count()
-        D = self.cpu_cores
-
-        if n_devices < D:
-            if n_devices == 1:
-                logger.warning(
-                    f"Requested {D} CPU cores for shard_map but JAX only "
-                    f"sees {n_devices} device. Call "
-                    f"hwoutils.set_host_device_count({D}) at program startup "
-                    "to enable multi-device parallelism."
-                )
-            D = n_devices
+        D = n_devices
         N = x_vals.shape[0]
 
         remainder = N % D

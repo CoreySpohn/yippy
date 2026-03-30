@@ -111,7 +111,6 @@ class EqxCoronagraph(eqx.Module):
         yippy_coro: Coronagraph | None = None,
         ensure_psf_datacube: bool = False,
         # Forwarded to yippy.Coronagraph when building from yip_path
-        cpu_cores: int = 4,
         downsample_shape: tuple[int, int] | None = None,
         aperture_radius_lod: float = 0.7,
         contrast_floor: float | None = None,
@@ -133,8 +132,6 @@ class EqxCoronagraph(eqx.Module):
             ensure_psf_datacube:
                 If ``True``, generate/load the 4-D PSF datacube and store it.
                 The datacube can be very large; default is ``False``.
-            cpu_cores:
-                Number of CPU cores for parallel PSF generation.
             downsample_shape:
                 Optional ``(ny, nx)`` to downsample PSFs (forwarded).
             aperture_radius_lod:
@@ -157,7 +154,6 @@ class EqxCoronagraph(eqx.Module):
         if yippy_coro is None:
             yippy_coro = Coronagraph(
                 yip_path,
-                cpu_cores=cpu_cores,
                 downsample_shape=downsample_shape,
                 aperture_radius_lod=aperture_radius_lod,
                 contrast_floor=contrast_floor,

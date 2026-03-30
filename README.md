@@ -214,7 +214,6 @@ in hwoutils for details and common gotchas.
 - `use_jax`: Use JAX for PSF computation. Default is `True`.
 - `x_symmetric`: Off-axis PSFs are symmetric about the x-axis. Default is `True`.
 - `y_symmetric`: Off-axis PSFs are symmetric about the y-axis. Default is `True`.
-- `cpu_cores`: Number of CPU cores for parallel PSF generation via `shard_map`. Default is `4`.
 
 ### Parallel processing of off-axis PSFs
 
@@ -222,5 +221,8 @@ The base call of `coronagraph.offax(x,y)` is the most user-friendly, but is not
 the most efficient. When generating many PSFs it is recommended to convert all
 required (x,y) positions into arrays of floats (in $`\lambda / D`$) and use the
 `coronagraph.offax.create_psfs_parallel(x_arr, y_arr)` function. This function
-uses JAX's `shard_map` to distribute the computation across multiple devices or
-CPU cores.
+uses JAX's `shard_map` to distribute the computation across multiple CPU devices.
+
+To use multiple CPU devices, call `hwoutils.set_host_device_count(N)` or set
+`XLA_FLAGS=--xla_force_host_platform_device_count=N` **before** importing JAX.
+On GPU/TPU backends, yippy automatically uses `vmap`+`jit` instead of `shard_map`.

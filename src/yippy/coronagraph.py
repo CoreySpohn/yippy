@@ -57,7 +57,6 @@ class Coronagraph:
         performance_file: str = "coro_perf.fits",
         x_symmetric: bool = True,
         y_symmetric: bool = True,
-        cpu_cores: int = 4,
         use_quarter_psf_datacube: bool = False,
         downsample_shape: tuple[int, int] | None = None,
         aperture_radius_lod: float = 0.7,
@@ -95,9 +94,6 @@ class Coronagraph:
                 Whether off-axis PSFs are symmetric about the x-axis. Default is True.
             y_symmetric (bool):
                 Whether off-axis PSFs are symmetric about the y-axis. Default is False.
-            cpu_cores (int):
-                Number of CPU cores for parallel PSF generation via
-                ``shard_map``. Default is 4.
             use_quarter_psf_datacube (bool):
                 Whether to compute the PSF datacube in only the first quadrant.
                 This is faster and uses less memory, but may not be accurate for
@@ -186,7 +182,6 @@ class Coronagraph:
             self.pixel_scale,
             x_symmetric,
             y_symmetric,
-            cpu_cores,
             downsample_shape=downsample_shape,
         )
 
@@ -259,6 +254,9 @@ class Coronagraph:
             batch_size (int):
                 Number of PSFs to generate in each batch. Default is 128.
         """
+        backend = jax.default_backend().lower()
+        if backend in ("gpu", "tpu"):
+            return self._create_psf_datacube_gpu(batch_size=batch_size)
         ext = "_quarter" if self.use_quarter_psf_datacube else ""
         datacube_path = self._cache_dir / f"psf_datacube{ext}.npy"
         if datacube_path.exists():
@@ -341,6 +339,73 @@ class Coronagraph:
                         f"device (insufficient memory): {e}. Keeping on CPU."
                     )
                     # psfs remains as numpy array on CPU
+
+        self.has_psf_datacube = True
+        self.psf_datacube = psfs
+
+    def _create_psf_datacube_gpu(self, batch_size=128):
+        """Generate PSF datacube on GPU/TPU, keeping data on-device.
+
+        Uses vmap+jit (``offax.create_psfs``) instead of shard_map to avoid
+        the CPU multi-device overhead that ``create_psfs_parallel`` carries.
+        Accumulates batches as JAX arrays on the accelerator, eliminating
+        the CPU<->GPU round-trips that bottleneck the standard path.
+
+        Args:
+            batch_size (int):
+                Number of PSFs to generate per batch. Default is 128.
+        """
+        ext = "_quarter" if self.use_quarter_psf_datacube else ""
+        datacube_path = self._cache_dir / f"psf_datacube{ext}.npy"
+        if datacube_path.exists():
+            logger.info(f"Loading PSF datacube from {datacube_path}.")
+            psfs = jnp.load(datacube_path)
+        else:
+            if not self.use_quarter_psf_datacube:
+                pixel_lod = (
+                    (np.arange(self.npixels) - ((self.npixels - 1) // 2))
+                    * u.pixel
+                    * self.pixel_scale
+                ).value
+            else:
+                center_idx = (self.npixels - 1) // 2
+                pixel_lod = (
+                    (np.arange(center_idx, self.npixels) - center_idx)
+                    * u.pixel
+                    * self.pixel_scale
+                ).value
+
+            n_src = len(pixel_lod)
+            psfs_shape = (n_src, n_src, *self.psf_shape)
+
+            x_lod, y_lod = np.meshgrid(pixel_lod, pixel_lod, indexing="xy")
+            points = np.column_stack((x_lod.flatten(), y_lod.flatten()))
+            n_points = points.shape[0]
+
+            backend = jax.default_backend().upper()
+            logger.info(
+                f"Generating {'quarter' if ext else 'full'} PSF datacube "
+                f"on {backend} ({n_points} points)..."
+            )
+
+            psf_batches = []
+            with tqdm(total=n_points, desc="Computing PSFs") as pb:
+                for i in range(0, n_points, batch_size):
+                    batch_x = jnp.array(points[i : i + batch_size, 0])
+                    batch_y = jnp.array(points[i : i + batch_size, 1])
+                    batch_psfs = self.offax.create_psfs(batch_x, batch_y)
+                    batch_psfs.block_until_ready()
+                    psf_batches.append(batch_psfs)
+                    pb.update(batch_x.shape[0])
+
+            psfs = jnp.concatenate(psf_batches, axis=0).reshape(psfs_shape)
+            jnp.save(datacube_path, psfs)
+            logger.info(f"PSF datacube saved to {datacube_path}.")
+
+        target_device = jax.devices()[0]
+        if not (hasattr(psfs, "devices") and target_device in psfs.devices()):
+            psfs = jax.device_put(jnp.asarray(psfs, dtype=jnp.float32), target_device)
+            logger.info(f"PSF datacube on {jax.default_backend().upper()} device")
 
         self.has_psf_datacube = True
         self.psf_datacube = psfs
