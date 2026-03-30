@@ -118,6 +118,7 @@ class EqxCoronagraph(eqx.Module):
         # Extra Coronagraph kwargs
         x_symmetric: bool = True,
         y_symmetric: bool = True,
+        **kwargs,
     ):
         """Create a pure-JAX coronagraph from a YIP directory or existing Coronagraph.
 
@@ -144,6 +145,8 @@ class EqxCoronagraph(eqx.Module):
                 Whether off-axis PSFs are symmetric about the x-axis (forwarded).
             y_symmetric:
                 Whether off-axis PSFs are symmetric about the y-axis (forwarded).
+            **kwargs:
+                Additional keyword arguments to pass to ``yippy.Coronagraph``.
 
         Raises:
             ValueError: If neither ``yip_path`` nor ``yippy_coro`` is provided.
@@ -160,6 +163,7 @@ class EqxCoronagraph(eqx.Module):
                 x_symmetric=x_symmetric,
                 y_symmetric=y_symmetric,
                 use_inscribed_diameter=use_inscribed_diameter,
+                **kwargs,
             )
 
         # -- Scalar metadata ---------------------------------------------
