@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0](https://github.com/CoreySpohn/yippy/compare/v2.2.2...v2.3.0) (2026-03-30)
+
+
+### Features
+
+* Add GPU PSF datacube function ([a35a224](https://github.com/CoreySpohn/yippy/commit/a35a224c83ebff24aa536ec3ab1151acd7023ba0))
+
 ## [2.2.2](https://github.com/CoreySpohn/yippy/compare/v2.2.1...v2.2.2) (2026-03-04)
 
 
