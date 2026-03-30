@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.1](https://github.com/CoreySpohn/yippy/compare/v2.3.0...v2.3.1) (2026-03-30)
+
+
+### Bug Fixes
+
+* Add support for additional Coronagraph keywords within EqxCoronagraph ([4f1b998](https://github.com/CoreySpohn/yippy/commit/4f1b99879654b85c44afc617b187e280096cb22c))
+
 ## [2.3.0](https://github.com/CoreySpohn/yippy/compare/v2.2.2...v2.3.0) (2026-03-30)
 
 
