@@ -79,13 +79,19 @@ class OffJAX(OffAx):
         # Note: We only store flat_psfs and the index mapping to minimize memory
         ##############
         self.flat_psfs = device_put(jnp.array(self.flat_psfs.astype(float)))
-        self.flat_x_offsets = device_put(jnp.array(self.flat_offsets[:, 0]))
-        self.flat_y_offsets = device_put(jnp.array(self.flat_offsets[:, 1]))
+        self.flat_x_offsets = device_put(
+            jnp.array(self.flat_offsets[:, 0].astype(float))
+        )
+        self.flat_y_offsets = device_put(
+            jnp.array(self.flat_offsets[:, 1].astype(float))
+        )
 
         # Convert offset arrays and index mapping to JAX arrays
-        self.x_offsets = device_put(jnp.array(self.x_offsets))
-        self.y_offsets = device_put(jnp.array(self.y_offsets))
-        self.offset_to_flat_idx = device_put(jnp.array(self.offset_to_flat_idx))
+        self.x_offsets = device_put(jnp.array(self.x_offsets.astype(float)))
+        self.y_offsets = device_put(jnp.array(self.y_offsets.astype(float)))
+        self.offset_to_flat_idx = device_put(
+            jnp.array(self.offset_to_flat_idx.astype(int))
+        )
 
         n_pixels = self.flat_psfs.shape[-1]
         n_pad = int(1.5 * n_pixels)
