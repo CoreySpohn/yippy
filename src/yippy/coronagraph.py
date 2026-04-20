@@ -92,7 +92,7 @@ class Coronagraph:
             x_symmetric (bool):
                 Whether off-axis PSFs are symmetric about the x-axis. Default is True.
             y_symmetric (bool):
-                Whether off-axis PSFs are symmetric about the y-axis. Default is False.
+                Whether off-axis PSFs are symmetric about the y-axis. Default is True.
             use_quarter_psf_datacube (bool):
                 Whether to compute the PSF datacube in only the first quadrant.
                 This is faster and uses less memory, but may not be accurate for
