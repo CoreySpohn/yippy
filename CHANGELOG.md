@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.3.2](https://github.com/CoreySpohn/yippy/compare/v2.3.1...v2.3.2) (2026-04-20)
+
+
+### Bug Fixes
+
+* Force float type for new jax version compatibility ([4c277df](https://github.com/CoreySpohn/yippy/commit/4c277dfa3b1b86dbafd2ade1798800be1ae1583d))
+* Make the float types explicit for even more arrays to fix FITS file errors ([c7c2e61](https://github.com/CoreySpohn/yippy/commit/c7c2e61467f89d6d84ecf641a7e1a047700a7a59))
+
 ## [2.3.1](https://github.com/CoreySpohn/yippy/compare/v2.3.0...v2.3.1) (2026-03-30)
 
 
