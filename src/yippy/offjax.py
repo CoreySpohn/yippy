@@ -78,7 +78,7 @@ class OffJAX(OffAx):
         # Convert the PSF data to JAX arrays
         # Note: We only store flat_psfs and the index mapping to minimize memory
         ##############
-        self.flat_psfs = device_put(jnp.array(self.flat_psfs))
+        self.flat_psfs = device_put(jnp.array(self.flat_psfs.astype(float)))
         self.flat_x_offsets = device_put(jnp.array(self.flat_offsets[:, 0]))
         self.flat_y_offsets = device_put(jnp.array(self.flat_offsets[:, 1]))
 
