@@ -880,7 +880,15 @@ def synthesize_psf_idw(
     input_type,
     k_neighbors=4,
 ):
-    """Synthesizes PSF using Inverse Distance Weighting (IDW) for irregular grids."""
+    """Synthesizes PSF using Power-2 Polar IDW for irregular grids.
+
+    Distance is the tangent-plane arc length at the query,
+    ``d = sqrt(dr**2 + (r_q * dtheta)**2)``, and weights use ``1 / d**2``.
+    The polar metric matches the radial/azimuthal anisotropy of coronagraph
+    PSF structure, and the squared exponent acts as a soft nearest-neighbor
+    on smooth grids. See yippy-paper Section 4 for the kernel-selection
+    rationale.
+    """
     # Handle Symmetry (Map to 1st Quadrant if 2DQ)
     if input_type == "2dq":
         _x, _y = convert_xy_2DQ(x, y)
@@ -889,10 +897,15 @@ def synthesize_psf_idw(
     else:
         _x, _y = x, y
 
-    # Compute Distances to ALL samples
-    # flat_x_offsets shape: (N_samples,)
-    d2 = (flat_x_offsets - _x) ** 2 + (flat_y_offsets - _y) ** 2
-    dists = jnp.sqrt(d2)
+    # Polar arc-length distance, linearized at the query.
+    r_q = jnp.hypot(_x, _y)
+    theta_q = jnp.arctan2(_y, _x)
+    r_n = jnp.hypot(flat_x_offsets, flat_y_offsets)
+    theta_n = jnp.arctan2(flat_y_offsets, flat_x_offsets)
+    dr = r_n - r_q
+    dtheta = (theta_n - theta_q + jnp.pi) % (2.0 * jnp.pi) - jnp.pi
+    arc = r_q * dtheta
+    dists = jnp.sqrt(dr**2 + arc**2)
 
     # Find K Nearest Neighbors
     # We use top_k on negative distance to find the smallest distances
@@ -902,9 +915,8 @@ def synthesize_psf_idw(
     # Get Neighbors
     neighbors = flat_psfs[inds]
 
-    # Calculate Weights (Inverse Distance)
-    # Add epsilon to avoid divide by zero
-    weights = 1.0 / (near_dists + 1e-10)
+    # Power-2 inverse-distance weights with a small epsilon to avoid /0.
+    weights = 1.0 / (near_dists + 1e-10) ** 2
     weights = weights / jnp.sum(weights)
 
     # Apply Symmetry Flips to neighbors
