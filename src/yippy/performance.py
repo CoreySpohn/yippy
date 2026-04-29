@@ -62,7 +62,10 @@ def _iter_xaxis_positions(coro: Coronagraph):
     """Yield :class:`OffAxisPosition` for each valid x-offset (y ~= 0).
 
     Iterates over each valid x-offset position along the performance-curve
-    axis.
+    axis. All native YIP offsets are included, even those where the nominal
+    point-source location lies outside the image, because the truncation-ratio
+    throughput remains meaningful as long as the translated PSF retains
+    significant in-image power.
     """
     y_offsets = np.array(coro.offax.y_offsets)
     y_idx = int(np.argmin(np.abs(y_offsets)))
@@ -71,16 +74,10 @@ def _iter_xaxis_positions(coro: Coronagraph):
     if y_lod_val != 0:
         logger.warning(f"No PSF at y=0, using closest y offset: {y_lod_val:.3f} lam/D")
 
-    max_sep = None
-    if hasattr(coro.offax, "max_offset_in_image"):
-        max_sep = coro.offax.max_offset_in_image.to(lod).value
-
     for i, x_lod_val in enumerate(np.array(coro.offax.x_offsets)):
         if x_lod_val < 0:
             continue
         r = abs(x_lod_val)
-        if max_sep is not None and r > max_sep:
-            continue
         planet_psf = coro.offax.get_psf_by_offset_idx(i, y_idx)
         if planet_psf is None:
             continue
@@ -99,6 +96,12 @@ def _collect_and_sort(separations: list, values: list) -> tuple[np.ndarray, np.n
     val = np.array(values)
     order = np.argsort(sep)
     return sep[order], val[order]
+
+
+def _point_source_in_image(pos: OffAxisPosition) -> bool:
+    """Return True if the nominal point-source pixel lies inside the PSF image."""
+    ny, nx = pos.psf.shape
+    return 0 <= pos.px < nx and 0 <= pos.py < ny
 
 
 def _oversample_psf(psf: np.ndarray, pixel_scale: float, oversample: int) -> np.ndarray:
@@ -264,6 +267,10 @@ def compute_throughput_curve(
     radius_pix = aperture_radius_lod / coro.pixel_scale.value
 
     for pos in _iter_xaxis_positions(coro):
+        if not _point_source_in_image(pos):
+            separations.append(pos.separation)
+            throughputs.append(0.0)
+            continue
         sub_os, px_os, py_os, r_os, sub_orig = extract_and_oversample_subarray(
             pos.psf, pos.px, pos.py, radius_pix, oversample
         )
@@ -304,6 +311,14 @@ def compute_raw_contrast_curve(
     radius_pix = aperture_radius_lod / coro.pixel_scale.value
 
     for pos in _iter_xaxis_positions(coro):
+        if not _point_source_in_image(pos):
+            # Raw contrast is undefined outside the image. Use a large finite
+            # sentinel so downstream spline construction stays well-defined;
+            # the point lies beyond OWA (max_offset_in_image) so it will not
+            # be queried in physically meaningful regimes.
+            separations.append(pos.separation)
+            contrasts.append(1e20)
+            continue
         # Planet flux
         sub_os_p, px_os_p, py_os_p, r_os_p, sub_orig_p = (
             extract_and_oversample_subarray(
@@ -363,6 +378,10 @@ def compute_core_area_curve(
     separations, core_areas = [], []
 
     for pos in _iter_xaxis_positions(coro):
+        if fit_gaussian and not _point_source_in_image(pos):
+            separations.append(pos.separation)
+            core_areas.append(np.pi * aperture_radius_lod**2)
+            continue
         if fit_gaussian:
             sub_os, px_os, py_os, _, _ = extract_and_oversample_subarray(
                 pos.psf,
