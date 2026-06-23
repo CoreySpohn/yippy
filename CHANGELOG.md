@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.10.0](https://github.com/HWO-Project/yippy/compare/v2.9.1...v2.10.0) (2026-06-23)
+
+
+### Features
+
+* Add citation file ([e0a2893](https://github.com/HWO-Project/yippy/commit/e0a2893a750e5c0cb3b4343253e95856f904629b))
+
 ## [2.9.1](https://github.com/HWO-Project/yippy/compare/v2.9.0...v2.9.1) (2026-06-02)
 
 
