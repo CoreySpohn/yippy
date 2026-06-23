@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: yippy
+abstract: "yippy is an open-source Python library for reading, interpreting, and querying coronagraph performance data from Yield Input Packages (YIPs). It provides Fourier-domain PSF interpolation, AYO/EXOSIMS-compatible exports, and a JAX-compatible interface for use in differentiable and GPU-accelerated Habitable Worlds Observatory simulation pipelines."
+authors:
+  - family-names: Spohn
+    given-names: Corey
+    orcid: "https://orcid.org/0000-0002-3138-0240"
+    affiliation: "NASA Goddard Space Flight Center"
+repository-code: "https://github.com/HWO-Project/yippy"
+license: MIT
+doi: "10.5281/zenodo.20172435"
