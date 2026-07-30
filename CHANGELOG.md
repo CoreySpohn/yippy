@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.10.1](https://github.com/HabitableWorldsObservatory/yippy/compare/v2.10.0...v2.10.1) (2026-07-30)
+
+
+### Miscellaneous Chores
+
+* release 2.10.1 ([1026e0d](https://github.com/HabitableWorldsObservatory/yippy/commit/1026e0d205b5d6e4c65da6ca50d2bc760dd0b8cd))
+
 ## [2.10.0](https://github.com/HWO-Project/yippy/compare/v2.9.1...v2.10.0) (2026-06-23)
 
 
