@@ -1,15 +1,15 @@
 <p align="center">
-  <img width = 250 src="https://raw.githubusercontent.com/HWO-Project/yippy/main/docs/_static/logo.png" alt="yippy logo" />
+  <img width = 250 src="https://raw.githubusercontent.com/HabitableWorldsObservatory/yippy/main/docs/_static/logo.png" alt="yippy logo" />
   <br><br>
 </p>
 
 <p align="center">
   <a href="https://pypi.org/project/yippy/"><img src="https://img.shields.io/pypi/v/yippy.svg?style=flat-square" alt="PyPI"/></a>
   <a href="https://yippy.readthedocs.io"><img src="https://readthedocs.org/projects/yippy/badge/?version=latest&style=flat-square" alt="Documentation Status"/></a>
-  <a href="https://github.com/HWO-Project/yippy/blob/main/LICENSE"><img src="https://img.shields.io/github/license/HWO-Project/yippy?style=flat-square" alt="License"/></a>
+  <a href="https://github.com/HabitableWorldsObservatory/yippy/blob/main/LICENSE"><img src="https://img.shields.io/github/license/HabitableWorldsObservatory/yippy?style=flat-square" alt="License"/></a>
   <a href="https://pypi.org/project/yippy/"><img src="https://img.shields.io/pypi/pyversions/yippy?style=flat-square" alt="Python"/></a>
   <a href="https://doi.org/10.5281/zenodo.20172435"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20172435-blue?style=flat-square" alt="DOI"></a>
-  <a href="https://github.com/HWO-Project/yippy/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/HWO-Project/yippy/tests.yml?branch=main&logo=github&style=flat-square&label=tests" alt="Tests"/></a>
+  <a href="https://github.com/HabitableWorldsObservatory/yippy/actions/workflows/tests.yml"><img src="https://img.shields.io/github/actions/workflow/status/HabitableWorldsObservatory/yippy/tests.yml?branch=main&logo=github&style=flat-square&label=tests" alt="Tests"/></a>
   <a href="https://github.com/pre-commit/pre-commit"><img src="https://img.shields.io/badge/pre--commit-enabled-brightgreen?style=flat-square&logo=pre-commit" alt="pre-commit"/></a>
 </p>
 

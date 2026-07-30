@@ -52,7 +52,7 @@ html_title = "Yield Input Package Python Wrapper"
 html_sidebars = {"posts/*": ["sbt-sidebar-nav.html"]}
 
 html_theme_options = {
-    "repository_url": "https://github.com/HWO-Project/yippy",
+    "repository_url": "https://github.com/HabitableWorldsObservatory/yippy",
     "repository_branch": "main",
     "use_repository_button": True,
     "show_toc_level": 2,

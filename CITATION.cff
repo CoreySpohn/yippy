@@ -8,6 +8,6 @@ authors:
     given-names: Corey
     orcid: "https://orcid.org/0000-0002-3138-0240"
     affiliation: "NASA Goddard Space Flight Center"
-repository-code: "https://github.com/HWO-Project/yippy"
+repository-code: "https://github.com/HabitableWorldsObservatory/yippy"
 license: MIT
 doi: "10.5281/zenodo.20172435"

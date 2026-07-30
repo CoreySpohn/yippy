@@ -58,9 +58,7 @@ CACHE_DIR_ENV_VAR = "YIPPY_CACHE_DIR"
 # Bump to ``data-vN`` when the underlying YIP files change.
 # ---------------------------------------------------------------------------
 DATA_RELEASE_TAG: str = "data-v2"
-_DATA_BASE_URL: str = (
-    f"https://github.com/HWO-Project/yippy/releases/download/{DATA_RELEASE_TAG}/"
-)
+_DATA_BASE_URL: str = f"https://github.com/HabitableWorldsObservatory/yippy/releases/download/{DATA_RELEASE_TAG}/"
 
 
 # ---------------------------------------------------------------------------
