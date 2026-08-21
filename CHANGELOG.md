@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.10.2](https://github.com/HabitableWorldsObservatory/yippy/compare/v2.10.1...v2.10.2) (2026-08-21)
+
+
+### Bug Fixes
+
+* Require hwoutils&gt;=1.6.1 for the radial_profile keyword rename ([96df49d](https://github.com/HabitableWorldsObservatory/yippy/commit/96df49de457c81f4250787043773c5205d821233))
+
 ## [2.10.1](https://github.com/HabitableWorldsObservatory/yippy/compare/v2.10.0...v2.10.1) (2026-07-30)
 
 
