@@ -1,5 +1,6 @@
 """Base coronagraph class."""
 
+import hashlib
 from pathlib import Path
 
 import astropy.io.fits as pyfits
@@ -457,11 +458,36 @@ class Coronagraph:
         d.mkdir(exist_ok=True)
         return d
 
+    def _source_signature(self) -> str:
+        """Short signature over the source YIP FITS files' size and mtime.
+
+        Folded into every cache filename so that an in-place overwrite of the
+        source YIP data (same filenames, new content) invalidates cached
+        performance curves and PSF datacubes, even when the aperture
+        settings, downsample target, and yippy version are unchanged. Cheap:
+        stats top-level FITS files only, never reads their contents, and does
+        not descend into ``yippy_cache`` itself (``glob`` is non-recursive).
+        """
+        stat_bits = []
+        for fits_path in sorted(self.yip_path.glob("*.fits")):
+            st = fits_path.stat()
+            stat_bits.append(f"{fits_path.name}:{st.st_size}:{st.st_mtime_ns}")
+        return hashlib.sha1("|".join(stat_bits).encode()).hexdigest()[:8]
+
     @property
     def _datacube_cache_path(self) -> Path:
-        """PSF datacube cache file, keyed by quarter/full and active float dtype."""
+        """PSF datacube cache file.
+
+        Keyed by quarter/full, active float dtype, the realized PSF pixel
+        shape (so a different ``downsample_shape`` gets its own cache entry),
+        and the source signature (so an in-place YIP overwrite is not served
+        a stale datacube).
+        """
         ext = "_quarter" if self.use_quarter_psf_datacube else ""
-        return self._cache_dir / f"psf_datacube{ext}_{dtype_tag()}.npy"
+        return (
+            self._cache_dir / f"psf_datacube{ext}_{dtype_tag()}_{self.npixels}px_"
+            f"{self._source_signature()}.npy"
+        )
 
     @property
     def _perf_dir(self) -> Path:
@@ -471,10 +497,16 @@ class Coronagraph:
         return d
 
     def _perf_filename(self) -> str:
-        """Build a performance cache filename encoding the aperture mode."""
+        """Build a performance cache filename encoding the aperture mode.
+
+        Also folds in the source signature (see ``_source_signature``) so a
+        stale performance curve is not reused after the source YIP data
+        changes.
+        """
+        sig = self._source_signature()
         if self.psf_trunc_ratio is not None:
-            return f"trunc_{self.psf_trunc_ratio:.2f}_v{__version__}.fits"
-        return f"aper_{self.aperture_radius_lod:.2f}_v{__version__}.fits"
+            return f"trunc_{self.psf_trunc_ratio:.2f}_v{__version__}_{sig}.fits"
+        return f"aper_{self.aperture_radius_lod:.2f}_v{__version__}_{sig}.fits"
 
     def set_psf_trunc_ratio(self, ratio: float) -> None:
         """Switch PSF truncation ratio, recomputing only the affected curves.

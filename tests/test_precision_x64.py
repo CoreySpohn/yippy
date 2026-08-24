@@ -17,7 +17,9 @@ from conftest import assert_eqx_arrays_match_active_dtype
 
 def test_datacube_cache_path_is_f64_keyed(coro):
     """The PSF datacube cache filename carries the 'f64' tag under x64."""
-    assert coro._datacube_cache_path.name == "psf_datacube_quarter_f64.npy"
+    p = coro._datacube_cache_path
+    assert p.name.startswith(f"psf_datacube_quarter_f64_{coro.npixels}px_")
+    assert p.suffix == ".npy"
 
 
 def test_eqx_stored_arrays_are_f64(eqx_coro):
