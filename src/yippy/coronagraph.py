@@ -982,7 +982,11 @@ class Coronagraph:
                 0.0*lod (point source).
 
         Returns:
-            float or numpy.ndarray: Core mean intensity value(s).
+            float or numpy.ndarray: Core mean intensity value(s): the
+            azimuthal mean, about the optical axis, of the fraction of the
+            star's light falling on one pixel. The unit is per pixel of
+            ``pixel_scale_arcsec`` (lambda/D per pixel), not per unit solid
+            angle; divide by the squared pixel scale for (lambda/D)^-2.
         """
         sep_values = self._convert_separation_to_lod(separation)
 

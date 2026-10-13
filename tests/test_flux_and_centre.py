@@ -153,3 +153,61 @@ def test_both_paths_agree_about_where_the_axis_is(syn_coro_1d, synthetic_1d):
         f"the separation map is centred on column {map_centre} while off-axis "
         f"synthesis is centred on {synthesis_centre}"
     )
+
+
+# The level of the four pixels that straddle the optical axis in the
+# axis-concentrated stellar map, and the faint level everywhere else. Both are
+# positive because the stellar-intensity reader interpolates in log space.
+AXIS_BLOCK_LEVEL = 1.0
+AXIS_BACKGROUND_LEVEL = 1e-4
+
+
+@pytest.fixture(scope="module")
+def axis_concentrated_coro(tmp_path_factory):
+    """A package whose stellar leakage sits on the four pixels around the axis.
+
+    The header follows the shipped packages: ``XCENTER = YCENTER = npix / 2``
+    counts pixels from the array's outer corner, so with integer indices
+    labelling pixel centres the optical axis is at index ``(npix - 1) / 2``,
+    between four pixels. Every shipped stellar map is point-symmetric about
+    that index and not about ``npix / 2``.
+    """
+    import astropy.io.fits as pyfits
+    from synthetic_yip import write_synthetic_yip
+
+    from yippy import Coronagraph
+
+    package = write_synthetic_yip(tmp_path_factory.mktemp("axis") / "axis_concentrated")
+    path = package.path / "stellar_intens.fits"
+    with pyfits.open(path) as hdul:
+        header = hdul[0].header.copy()
+        maps = np.full_like(hdul[0].data, AXIS_BACKGROUND_LEVEL)
+    axis = (package.npix - 1) // 2
+    maps[:, axis : axis + 2, axis : axis + 2] = AXIS_BLOCK_LEVEL
+    pyfits.PrimaryHDU(maps, header=header).writeto(path, overwrite=True)
+    return Coronagraph(package.path)
+
+
+def test_core_mean_intensity_is_measured_about_the_optical_axis(
+    axis_concentrated_coro,
+):
+    """The innermost core mean intensity is the light right at the axis.
+
+    The four pixels around the axis are the only ones within one pixel of it,
+    so the azimuthal mean intensity at the innermost tabulated separation is
+    exactly their level, and the next separation outward sees only the
+    background. A profile centred half a pixel off the axis on each axis mixes
+    the block with the background in its first bin and reads well below the
+    block level.
+    """
+    coro = axis_concentrated_coro
+    separations, profiles = coro.core_mean_intensity_curve(plot=False)
+    profile = profiles[next(iter(profiles))]
+
+    assert float(coro.core_mean_intensity(separations[0])) == pytest.approx(
+        AXIS_BLOCK_LEVEL, rel=1e-6
+    ), "the innermost mean intensity is not the level of the pixels at the axis"
+    assert profile[0] == pytest.approx(AXIS_BLOCK_LEVEL, rel=1e-6)
+    assert profile[1] == pytest.approx(AXIS_BACKGROUND_LEVEL, rel=1e-6), (
+        "light from the pixels at the axis leaked into the second radial bin"
+    )

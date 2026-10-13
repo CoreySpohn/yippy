@@ -357,7 +357,11 @@ class EqxCoronagraph(eqx.Module):
                 Default is 0.0 (point source).
 
         Returns:
-            Scalar core mean intensity value.
+            Scalar core mean intensity: the azimuthal mean, about the
+            optical axis, of the fraction of the star's light falling on
+            one pixel. The unit is per pixel of ``pixel_scale_lod``, not per
+            unit solid angle; divide by ``pixel_scale_lod**2`` for
+            (lambda/D)^-2.
         """
         point_source = self._core_mean_intensity_interp(separation_lod)
         if not self._has_2d_core_intensity:
