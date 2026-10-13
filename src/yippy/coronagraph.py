@@ -29,6 +29,7 @@ from .performance import (
     compute_raw_contrast_curve,
     compute_throughput_curve,
     plot_performance_curve,
+    stellar_axis_index,
 )
 from .sky_trans import SkyTrans
 from .stellar_intens import StellarIntens
@@ -1019,14 +1020,19 @@ class Coronagraph:
     # ------------------------------------------------------------------
 
     def separation_map(self):
-        """Pixel-grid separations from the coronagraph center in lam/D.
+        """Pixel-grid separations from the optical axis in lam/D.
+
+        The axis is the one the core mean intensity profile is measured about
+        (:func:`yippy.performance.stellar_axis_index`): half a pixel before
+        the header's ``XCENTER`` and ``YCENTER``, between the four central
+        pixels of an even-sized map. The 2D map projections built on this
+        grid therefore agree with their 1D curves.
 
         Returns:
             numpy.ndarray: (npix, npix) array of separations.
         """
         npix = self.npixels
-        cx = self.header.xcenter
-        cy = self.header.ycenter
+        cy, cx = stellar_axis_index(self)
         y, x = np.mgrid[:npix, :npix]
         r_pix = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
         return r_pix * self.pixel_scale_arcsec.value

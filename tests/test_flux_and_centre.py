@@ -6,9 +6,9 @@ hold for that to be safe: the combination must not create or destroy light
 relative to the PSFs it combined, and every path through the reader must agree
 about where the optical axis sits.
 
-The second is currently not true, and the disagreement is recorded here rather
-than papered over: the separation map places the axis at the header's centre
-while off-axis synthesis mirrors about half a pixel away from it.
+The separation map, the core mean intensity profile, and off-axis synthesis
+all place the axis at index (npix - 1) / 2, half a pixel before the header's
+XCENTER, which counts pixels from the array's outer corner.
 """
 
 import numpy as np
@@ -107,51 +107,46 @@ def test_a_tabulated_offset_is_returned_without_interpolation(
         )
 
 
-def test_the_separation_map_puts_zero_at_the_declared_centre(syn_coro_1d, synthetic_1d):
-    """The separation map reads zero exactly at the header's optical axis."""
-    centre = int(synthetic_1d.center)
+def test_the_separation_map_is_measured_about_the_optical_axis(
+    syn_coro_1d, synthetic_1d
+):
+    """Every pixel reads its distance from index (npix - 1) / 2 in lambda/D.
+
+    The header's XCENTER = npix / 2 counts pixels from the array's outer
+    corner, so the axis falls between the four central pixels. Those four read
+    sqrt(2) / 2 pixels, not zero, and the map is point-symmetric about the
+    array's middle, the same axis the core mean intensity profile uses.
+    """
+    npix = synthetic_1d.npix
+    pixel_lod = synthetic_1d.pixscale
+    axis = (npix - 1) / 2.0
+    rows, columns = np.indices((npix, npix))
+    expected = np.hypot(rows - axis, columns - axis) * pixel_lod
+
     separation_map = np.asarray(syn_coro_1d.separation_map())
 
-    assert separation_map[centre, centre] == 0.0, (
-        f"the separation map reads {separation_map[centre, centre]} at the "
-        f"declared centre ({centre}, {centre}), not zero"
-    )
-    row, column = np.unravel_index(np.argmin(separation_map), separation_map.shape)
-    assert (row, column) == (centre, centre), (
-        f"the separation map's minimum is at ({row}, {column}), not at the "
-        f"declared centre ({centre}, {centre})"
-    )
+    np.testing.assert_allclose(separation_map, expected, rtol=1e-12, atol=0.0)
+    middle = npix // 2
+    central = separation_map[middle - 1 : middle + 1, middle - 1 : middle + 1]
+    np.testing.assert_allclose(central, np.sqrt(0.5) * pixel_lod, rtol=1e-12)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Two paths through the reader disagree about the optical axis. The "
-        "separation map places it at the header's XCENTER, npix / 2, and reads "
-        "exactly zero there. Off-axis synthesis mirrors with a whole-array "
-        "flip, which is symmetric about (npix - 1) / 2 instead, so a source at "
-        "-s lands one pixel closer to the axis than one at +s. Both cannot be "
-        "right, and a consumer converting a sky position to a pixel has no way "
-        "to tell which path it inherited. Same defect as the anchor in "
-        "test_direction_anchor.py, asserted here through the map so that "
-        "whichever convention is chosen has to make both paths agree."
-    ),
-)
 def test_both_paths_agree_about_where_the_axis_is(syn_coro_1d, synthetic_1d):
-    """The centre the map uses is the centre synthesis mirrors about."""
+    """The center the map uses is the center synthesis mirrors about."""
     separation_map = np.asarray(syn_coro_1d.separation_map())
-    map_centre = np.unravel_index(np.argmin(separation_map), separation_map.shape)[1]
+    nearest = np.argwhere(separation_map == separation_map.min())
+    map_center = float(np.mean(nearest[:, 1]))
 
     columns = []
     for separation in (2.0, 3.0):
         for sign in (+1.0, -1.0):
             psf = np.asarray(syn_coro_1d.offax(sign * separation * lod, 0.0 * lod))
             columns.append(np.unravel_index(np.argmax(psf), psf.shape)[1])
-    synthesis_centre = float(np.mean(columns))
+    synthesis_center = float(np.mean(columns))
 
-    assert synthesis_centre == pytest.approx(float(map_centre)), (
-        f"the separation map is centred on column {map_centre} while off-axis "
-        f"synthesis is centred on {synthesis_centre}"
+    assert synthesis_center == pytest.approx(float(map_center)), (
+        f"the separation map is centered on column {map_center} while off-axis "
+        f"synthesis is centered on {synthesis_center}"
     )
 
 
@@ -168,7 +163,7 @@ def axis_concentrated_coro(tmp_path_factory):
 
     The header follows the shipped packages: ``XCENTER = YCENTER = npix / 2``
     counts pixels from the array's outer corner, so with integer indices
-    labelling pixel centres the optical axis is at index ``(npix - 1) / 2``,
+    labeling pixel centers the optical axis is at index ``(npix - 1) / 2``,
     between four pixels. Every shipped stellar map is point-symmetric about
     that index and not about ``npix / 2``.
     """
@@ -196,7 +191,7 @@ def test_core_mean_intensity_is_measured_about_the_optical_axis(
     The four pixels around the axis are the only ones within one pixel of it,
     so the azimuthal mean intensity at the innermost tabulated separation is
     exactly their level, and the next separation outward sees only the
-    background. A profile centred half a pixel off the axis on each axis mixes
+    background. A profile centered half a pixel off the axis on each axis mixes
     the block with the background in its first bin and reads well below the
     block level.
     """
@@ -211,3 +206,25 @@ def test_core_mean_intensity_is_measured_about_the_optical_axis(
     assert profile[1] == pytest.approx(AXIS_BACKGROUND_LEVEL, rel=1e-6), (
         "light from the pixels at the axis leaked into the second radial bin"
     )
+
+
+def test_core_mean_intensity_map_is_the_profile_about_the_optical_axis(
+    axis_concentrated_coro,
+):
+    """The 2D projection of the core mean intensity is centered on the axis.
+
+    The four pixels around the axis are equidistant from it, so they read the
+    same value, the profile evaluated at sqrt(2) / 2 pixels, and the whole map
+    is point-symmetric about the array's middle. A map centered on the
+    header's XCENTER instead puts one of those pixels on zero separation and
+    the other three at different radii, so they disagree.
+    """
+    coro = axis_concentrated_coro
+    pixel_lod = float(coro.pixel_scale_arcsec.value)
+    intensity_map = np.asarray(coro.core_mean_intensity_map())
+    middle = intensity_map.shape[0] // 2
+    central = intensity_map[middle - 1 : middle + 1, middle - 1 : middle + 1]
+
+    expected = float(coro.core_mean_intensity(np.sqrt(0.5) * pixel_lod))
+    np.testing.assert_allclose(central, expected, rtol=1e-10)
+    np.testing.assert_allclose(intensity_map, intensity_map[::-1, ::-1], rtol=1e-10)
