@@ -213,8 +213,8 @@ def compute_radial_average(
     Args:
         image: 2D numpy array.
         pixel_scale_value: Pixel scale in lambda/D per pixel (float).
-        center: ``(cy, cx)`` pixel coordinates of centre. Defaults to
-            image centre.
+        center: ``(cy, cx)`` pixel coordinates of center. Defaults to
+            image center.
         nbins: Number of radial bins. Defaults to ``floor(max_dim / 2)``.
 
     Returns:
@@ -525,11 +525,11 @@ def compute_occ_trans_curve(
 
 
 def stellar_axis_index(coro: Coronagraph) -> tuple[float, float]:
-    """Pixel-centre index ``(row, column)`` of the optical axis in the stellar maps.
+    """Pixel-center index ``(row, column)`` of the optical axis in the stellar maps.
 
     A package's ``XCENTER`` and ``YCENTER`` (or ``npix / 2`` when they are
     absent) count pixels from the array's outer corner. With integer indices
-    labelling pixel centres the axis therefore sits half a pixel earlier: a
+    labeling pixel centers the axis therefore sits half a pixel earlier: a
     256-pixel map with ``XCENTER = 128`` is point-symmetric about index 127.5,
     between the four central pixels.
 
@@ -537,7 +537,7 @@ def stellar_axis_index(coro: Coronagraph) -> tuple[float, float]:
         coro: Coronagraph instance.
 
     Returns:
-        ``(row, column)`` of the optical axis as 0-based pixel-centre indices.
+        ``(row, column)`` of the optical axis as 0-based pixel-center indices.
     """
     return (
         coro.stellar_intens.center_y - 0.5,
