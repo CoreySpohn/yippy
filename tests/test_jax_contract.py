@@ -70,9 +70,9 @@ def test_a_traced_stellar_diameter_runs_and_matches_eager(syn_eqx_1d, diameter):
 
     A diameter that reaches a Python ``if`` raises the moment a caller puts the
     call inside ``jit``, because a comparison against a tracer is itself a
-    tracer. Both a zero and a non-zero diameter are checked, since they select
-    different interpolants and a selection written with ``jnp.where`` has to
-    give the eager answer for each.
+    tracer. Both a zero and a non-zero diameter are checked, since they take
+    different branches of the ``lax.cond`` that selects the interpolant, and
+    each branch has to give the eager answer.
     """
     eager = float(syn_eqx_1d.core_mean_intensity(5.0, diameter))
     traced = eqx.filter_jit(lambda d: syn_eqx_1d.core_mean_intensity(5.0, d))(

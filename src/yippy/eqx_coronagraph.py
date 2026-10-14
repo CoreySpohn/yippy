@@ -97,11 +97,11 @@ class EqxCoronagraph(eqx.Module):
     _occ_trans_interp: interpax.CubicSpline
     _core_area_interp: interpax.CubicSpline
     _core_mean_intensity_interp: interpax.CubicSpline
-    _has_2d_core_intensity: bool
+    _core_intensity_varies_with_diameter: bool = eqx.field(static=True)
     _diam_knot_range: tuple[float, float]
     _profile_radii_pix: Array
-    _stellar_axis: tuple[float, float]
-    _interp_order: int
+    _stellar_axis: tuple[float, float] = eqx.field(static=True)
+    _interp_order: int = eqx.field(static=True)
 
     # -- Static arrays (dynamic) -----------------------------------------
     sky_trans: Array
@@ -210,7 +210,7 @@ class EqxCoronagraph(eqx.Module):
         # Core mean intensity at other diameters: the azimuthal mean of the
         # interpolated stellar map on the profile radii, computed on demand.
         diam_values = np.asarray(stellar.diams.value, dtype=float)
-        self._has_2d_core_intensity = len(diam_values) > 1
+        self._core_intensity_varies_with_diameter = len(diam_values) > 1
         self._diam_knot_range = (float(diam_values.min()), float(diam_values.max()))
         self._stellar_axis = tuple(float(c) for c in stellar_axis_index(yippy_coro))
         self._profile_radii_pix = jnp.asarray(
@@ -344,6 +344,12 @@ class EqxCoronagraph(eqx.Module):
         :meth:`stellar_intens` at that diameter, so the curve and the map
         describe the same star.
 
+        Each call at a nonzero diameter interpolates one stellar map and,
+        with linear interpolation in separation (the default), samples only
+        the two profile circles that bracket the separation, so a ``vmap``
+        over a catalog of stars holds one map and two circles per star. With
+        cubic interpolation the whole profile is computed per call.
+
         Args:
             separation_lod: Separation from the star in lambda/D.
             stellar_diam_lod: Stellar angular diameter in lambda/D.
@@ -357,7 +363,7 @@ class EqxCoronagraph(eqx.Module):
             (lambda/D)^-2.
         """
         point_source = self._core_mean_intensity_interp(separation_lod)
-        if not self._has_2d_core_intensity:
+        if not self._core_intensity_varies_with_diameter:
             return point_source
 
         # lax.cond rather than a Python if, so that a traced stellar diameter
@@ -374,19 +380,20 @@ class EqxCoronagraph(eqx.Module):
 
     def _core_mean_intensity_at(self, separation_lod, stellar_diam_lod) -> Array:
         """Azimuthal mean of the interpolated stellar map at one diameter."""
-        profile = azimuthal_mean_profile(
-            self.stellar_intens(stellar_diam_lod),
-            self._stellar_axis,
-            self._profile_radii_pix,
-        )
-        separations = self._profile_radii_pix * self.pixel_scale_lod
+        stellar_map = self.stellar_intens(stellar_diam_lod)
+        radii = self._profile_radii_pix
+        r_pix = jnp.asarray(separation_lod, dtype=radii.dtype) / self.pixel_scale_lod
         if self._interp_order <= 1:
-            interp = interpax.Interpolator1D(
-                separations, profile, method="linear", extrap=True
-            )
-        else:
-            interp = interpax.CubicSpline(separations, profile)
-        return interp(jnp.asarray(separation_lod, dtype=profile.dtype))
+            # Linear interpolation (extrapolating past the last radius) needs
+            # only the two profile circles that bracket the separation.
+            i = jnp.clip(jnp.searchsorted(radii, r_pix) - 1, 0, radii.size - 2)
+            pair = radii[jnp.stack([i, i + 1])]
+            means = azimuthal_mean_profile(stellar_map, self._stellar_axis, pair)
+            frac = (r_pix - pair[0]) / (pair[1] - pair[0])
+            return means[0] + frac * (means[1] - means[0])
+        profile = azimuthal_mean_profile(stellar_map, self._stellar_axis, radii)
+        interp = interpax.CubicSpline(radii * self.pixel_scale_lod, profile)
+        return interp(r_pix * self.pixel_scale_lod)
 
 
 # -- Helpers ------------------------------------------------------------------

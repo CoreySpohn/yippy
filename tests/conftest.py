@@ -25,7 +25,7 @@ def assert_eqx_arrays_match_active_dtype(eqx_coro):
     assert np.dtype(eqx_coro.sky_trans.dtype) == expected, "sky_trans"
     assert np.dtype(eqx_coro.stellar_intens(0.0).dtype) == expected, "stellar_intens"
     assert np.dtype(eqx_coro.throughput(5.0).dtype) == expected, "throughput"
-    if eqx_coro._has_2d_core_intensity:
+    if eqx_coro._core_intensity_varies_with_diameter:
         out_2d = eqx_coro.core_mean_intensity(5.0, 1e-3)
         assert np.dtype(out_2d.dtype) == expected, "core_mean_intensity_2d"
 
