@@ -21,6 +21,8 @@ from .logger import logger
 from .offjax import OffJAX
 from .performance import (
     CORE_OVERSAMPLE,
+    CORE_STEP_LOD,
+    CORE_WINDOW_LOD,
     compute_core_area_curve,
     compute_core_mean_intensity_curve,
     compute_occ_trans_curve,
@@ -306,6 +308,7 @@ class Coronagraph:
             plot=False,
             psf_trunc_ratio=self.psf_trunc_ratio,
             interp_order=self.interp_order,
+            _validated_cache=hit,
         )
 
     def create_psf_datacube(self, batch_size=128):
@@ -602,16 +605,18 @@ class Coronagraph:
     ) -> dict:
         """Complete identity of a stored performance table.
 
-        The table holds separation, throughput and unfloored raw contrast, so
-        the identity covers everything those depend on: the source files and
-        their generation, realized resolution and dtype, the circular aperture
-        radius (which sets contrast even in truncation mode), the aperture
-        mode and threshold, the effective oversampling (and the subpixel
-        factor of the truncation core), and the stellar
-        diameter of the contrast calculation. Settings applied after loading
-        (contrast floor, inscribed-diameter scaling, interpolation order) and
-        quantities recomputed on every construction (core area, occulter
-        transmission, core mean intensity) are not part of it.
+        The table holds separation, throughput and unfloored raw contrast,
+        and in truncation mode the core throughput and core area on their own
+        separation grid, so the identity covers everything those depend on:
+        the source files and their generation, realized resolution and dtype,
+        the circular aperture radius (which sets contrast even in truncation
+        mode), the aperture mode and threshold, the effective oversampling,
+        the stellar diameter of the contrast calculation, and in truncation
+        mode the core's subpixel factor, grid step and window. Settings
+        applied after loading (contrast floor, inscribed-diameter scaling,
+        interpolation order) and quantities recomputed on every construction
+        (circular-mode core area, occulter transmission, core mean intensity)
+        are not part of it.
         """
         identity = self._cache_identity_base(
             "performance",
@@ -624,10 +629,17 @@ class Coronagraph:
                 "aperture_radius_lod": aperture_radius_lod,
                 "psf_trunc_ratio": psf_trunc_ratio,
                 "oversample": oversample,
-                "core_oversample": None if psf_trunc_ratio is None else CORE_OVERSAMPLE,
                 "stellar_diam_lod": getattr(stellar_diam, "value", stellar_diam),
             }
         )
+        if psf_trunc_ratio is not None:
+            identity.update(
+                {
+                    "core_oversample": CORE_OVERSAMPLE,
+                    "core_step_lod": CORE_STEP_LOD,
+                    "core_window_lod": CORE_WINDOW_LOD,
+                }
+            )
         return identity
 
     def _auto_perf_identity(self) -> dict:
@@ -713,6 +725,7 @@ class Coronagraph:
         plot=False,
         psf_trunc_ratio=None,
         interp_order=1,
+        _validated_cache=False,
     ):
         """Compute all coronagraph performance curves at once.
 
@@ -732,6 +745,7 @@ class Coronagraph:
             plot=plot,
             psf_trunc_ratio=psf_trunc_ratio,
             interp_order=interp_order,
+            _validated_cache=_validated_cache,
         )
 
     def _compute_performance_metrics(

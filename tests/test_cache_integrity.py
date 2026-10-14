@@ -67,7 +67,7 @@ def _forbid_persisted_computation(monkeypatch):
 
     for name in (
         "compute_throughput_curve",
-        "compute_truncation_throughput_curve",
+        "compute_truncation_curves",
         "compute_raw_contrast_curve",
     ):
         _patch_everywhere(monkeypatch, name, fail)
@@ -105,6 +105,31 @@ def test_constructor_then_setter_matches_cold(tmp_path):
     warm.set_psf_trunc_ratio(0.3)
     cold = Coronagraph(_yip(tmp_path, "cold"), psf_trunc_ratio=0.3)
     _assert_same_metrics(warm, cold)
+
+
+def test_truncation_core_is_read_from_the_cache(tmp_path, monkeypatch, caplog):
+    """A cache hit in truncation mode recomputes nothing and warns of nothing."""
+    path = _yip(tmp_path, "warm")
+    cold = Coronagraph(path, psf_trunc_ratio=0.3)
+    _forbid_persisted_computation(monkeypatch)
+    with caplog.at_level("WARNING", logger="yippy"):
+        warm = Coronagraph(path, psf_trunc_ratio=0.3)
+    assert not any("not checked" in r.getMessage() for r in caplog.records)
+    _assert_same_metrics(warm, cold)
+
+
+def test_explicit_import_in_truncation_mode_warns(tmp_path, caplog):
+    """Importing a table with a truncation ratio says its ratio is unchecked."""
+    path = _yip(tmp_path, "warm")
+    coro = Coronagraph(path, psf_trunc_ratio=0.3)
+    with caplog.at_level("WARNING", logger="yippy"):
+        coro.compute_all_performance_curves(
+            save_to_fits=False,
+            load_from_file=coro._perf_filename(),
+            cache_dir=coro._perf_dir,
+            psf_trunc_ratio=0.3,
+        )
+    assert any("not checked" in r.getMessage() for r in caplog.records)
 
 
 def test_setter_does_not_persist_contrast_floor(tmp_path):

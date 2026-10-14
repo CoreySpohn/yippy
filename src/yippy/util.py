@@ -206,6 +206,7 @@ def save_coro_performance_to_fits(
     outdir: Path,
     overwrite=True,
     identity: dict | None = None,
+    core: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
 ):
     """Save coronagraph performance (throughput, raw_contrast) to a FITS file.
 
@@ -220,6 +221,9 @@ def save_coro_performance_to_fits(
             table. Its digest (``CACHEKEY``) and canonical JSON (``CACHEID``)
             are written to the primary header, which is what automatic cache
             reuse validates against.
+        core: Optional ``(separations, throughputs, core_areas)`` of the
+            truncation core, written as a second table (``CORE_TRUNCATION``)
+            on its own separation grid.
     """
     sort_idx = np.argsort(sep)
     col_sep = fits.Column(name="separation_lamD", format="E", array=sep[sort_idx])
@@ -233,7 +237,19 @@ def save_coro_performance_to_fits(
     if identity is not None:
         primary_hdu.header["CACHEKEY"] = cache_identity_digest(identity)
         primary_hdu.header["CACHEID"] = cache_identity_json(identity)
-    hdul = fits.HDUList([primary_hdu, tbhdu])
+    hdus = [primary_hdu, tbhdu]
+    if core is not None:
+        core_sep, core_thr, core_area = (np.asarray(a) for a in core)
+        core_hdu = fits.BinTableHDU.from_columns(
+            [
+                fits.Column(name="separation_lamD", format="D", array=core_sep),
+                fits.Column(name="throughput", format="D", array=core_thr),
+                fits.Column(name="core_area_lamD2", format="D", array=core_area),
+            ]
+        )
+        core_hdu.name = "CORE_TRUNCATION"
+        hdus.append(core_hdu)
+    hdul = fits.HDUList(hdus)
     outpath = outdir / filename
     hdul.writeto(outpath, overwrite=overwrite)
 
@@ -260,6 +276,23 @@ def load_coro_performance_from_fits(filename: str, indir: Path):
         thr = data["throughput"]
         con = data["raw_contrast"]
     return sep, thr, con
+
+
+def load_core_truncation_from_fits(filename: str, indir: Path):
+    """Load the truncation core table, or None if the file has none.
+
+    Returns:
+        ``(separations, throughputs, core_areas)`` or None.
+    """
+    with fits.open(indir / filename) as hdul:
+        if "CORE_TRUNCATION" not in hdul:
+            return None
+        data = hdul["CORE_TRUNCATION"].data
+        return (
+            np.array(data["separation_lamD"], dtype=float),
+            np.array(data["throughput"], dtype=float),
+            np.array(data["core_area_lamD2"], dtype=float),
+        )
 
 
 def extract_and_oversample_subarray(

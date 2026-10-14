@@ -174,7 +174,7 @@ def test_core_area_follows_the_synthesized_psf_between_offsets(growth_package, r
     is not the mix of the two cores.
     """
     coro = Coronagraph(growth_package.path, psf_trunc_ratio=ratio)
-    separations = np.array([2.5, 3.0, 3.37, 3.5, 4.6, 5.25])
+    separations = np.array([2.5, 3.0, 3.37, 3.5, 4.6, 4.9])
     expected = np.array(
         [mixture_core_area(growth_package, s, ratio) for s in separations]
     )
@@ -289,7 +289,7 @@ def test_core_throughput_follows_the_synthesized_psf_between_offsets(
     overstates it by 2 to 7 percent here.
     """
     coro = Coronagraph(growth_package.path, psf_trunc_ratio=ratio)
-    separations = np.array([2.5, 3.0, 3.37, 3.5, 4.6, 5.25])
+    separations = np.array([2.5, 3.0, 3.37, 3.5, 4.6, 4.9])
     expected = np.array(
         [mixture_core(growth_package, s, ratio)[1] for s in separations]
     )
@@ -317,3 +317,146 @@ def test_shipped_core_throughput_matches_the_band_limited_psf(
     _, expected = fourier_upsampled_core(psf, pixel_lod, SHIPPED_RATIO, factor=8)
     got = coro.throughput(separation_lod)
     assert got == pytest.approx(expected, rel=THROUGHPUT_TOL)
+
+
+# A Gaussian package tabulated out to 7.5 lambda/D on a 64-pixel (16 lambda/D)
+# image, so offsets reach within half a lambda/D of the edge.
+EDGE_MAX_OFFSET_LOD = 7.5
+
+
+@pytest.fixture(scope="module")
+def edge_package(tmp_path_factory):
+    """Identical Gaussians tabulated up to the image edge."""
+    from synthetic_yip import write_synthetic_yip
+
+    return write_synthetic_yip(
+        tmp_path_factory.mktemp("core") / "edge", max_offset_lod=EDGE_MAX_OFFSET_LOD
+    )
+
+
+def gaussian_core_expected(package, separations, ratio):
+    """Closed-form (throughput, area) of the synthesized Gaussian PSFs."""
+    nodes = np.sort(package.offsets[:, 0])
+    flux = np.interp(separations, nodes, package.psf_flux * package.occulter(nodes))
+    return flux * (1.0 - ratio), gaussian_core_area(package.psf_sigma_lod, ratio)
+
+
+@pytest.mark.parametrize("ratio", TRUNC_RATIOS)
+def test_core_near_the_image_edge_is_its_closed_form(edge_package, ratio):
+    """A core that lies inside the image is measured whole near the edge.
+
+    The sources sit 1 to 2 lambda/D from the edge, where the core (radius
+    0.6 to 0.8 lambda/D) is still inside the image; a band-limited
+    interpolant evaluated next to the edge would wrap light from the
+    opposite border into it.
+    """
+    coro = Coronagraph(edge_package.path, psf_trunc_ratio=ratio)
+    separations = (6.0, 6.5, 7.0)
+    t_expected, a_expected = gaussian_core_expected(edge_package, separations, ratio)
+    t_got = np.array([coro.throughput(s) for s in separations])
+    a_got = np.array([coro.core_area(s) for s in separations])
+    assert np.abs(a_got / a_expected - 1.0).max() <= AREA_TOL, a_got
+    assert np.abs(t_got / t_expected - 1.0).max() <= THROUGHPUT_TOL, t_got
+
+
+@pytest.mark.parametrize("ratio", TRUNC_RATIOS)
+def test_core_inside_the_inner_working_angle_is_its_closed_form(
+    gaussian_package, ratio
+):
+    """Inside the inner working angle a faint compact core is still measured.
+
+    The occulter dims the synthetic package's PSFs by up to six orders of
+    magnitude near the axis without changing their shape, so the core is
+    defined relative to the PSF's own peak and keeps its closed form.
+    """
+    coro = Coronagraph(gaussian_package.path, psf_trunc_ratio=ratio)
+    separations = (0.1, 0.25, 0.5, 0.8)
+    t_expected, a_expected = gaussian_core_expected(
+        gaussian_package, separations, ratio
+    )
+    t_got = np.array([coro.throughput(s) for s in separations])
+    a_got = np.array([coro.core_area(s) for s in separations])
+    assert np.abs(a_got / a_expected - 1.0).max() <= AREA_TOL, a_got
+    assert np.abs(t_got / t_expected - 1.0).max() <= THROUGHPUT_TOL, t_got
+
+
+def quintic_spline_core(psf, pixel_lod, ratio, factor=10):
+    """Core (throughput, area) from a quintic spline of the PSF, not a DFT.
+
+    The spline (scipy ``RectBivariateSpline``, degree 5 in each axis) is
+    evaluated at subpixel centers over the window
+    :func:`yippy.performance.truncation_core` uses, a reference built with a
+    different interpolant.
+    """
+    from scipy.interpolate import RectBivariateSpline
+
+    from yippy.performance import core_window_half_width_pix
+
+    psf = np.asarray(psf, dtype=np.float64)
+    n = psf.shape[0]
+    idx = np.arange(n)
+    spline = RectBivariateSpline(idx, idx, psf, kx=5, ky=5)
+    row, col = np.unravel_index(np.argmax(psf), psf.shape)
+    half = core_window_half_width_pix(pixel_lod)
+    r0, r1 = max(row - half, 0), min(row + half + 1, n)
+    c0, c1 = max(col - half, 0), min(col + half + 1, n)
+    rows = r0 + (np.arange((r1 - r0) * factor) + 0.5) / factor - 0.5
+    cols = c0 + (np.arange((c1 - c0) * factor) + 0.5) / factor - 0.5
+    fine = spline(rows, cols)
+    core = fine > ratio * fine.max()
+    return fine[core].sum() / factor**2, core.sum() * (pixel_lod / factor) ** 2
+
+
+SHIPPED_PROBES_LOD = (2.0, 4.7, 9.4, 15.0, 25.0)
+
+
+@pytest.mark.parametrize("separation_lod", SHIPPED_PROBES_LOD)
+def test_shipped_core_matches_a_quintic_spline_reference(
+    shipped_trunc_coro, separation_lod
+):
+    """The band-limited core agrees with one taken from a quintic spline.
+
+    Both interpolants reconstruct a well-sampled PSF to far better than the
+    threshold needs, so the cores of the same synthesized PSF agree to 0.2
+    percent; a cubic kernel does not (it overstates the area by up to 0.7
+    percent at this sampling).
+    """
+    import jax.numpy as jnp
+    from lod_unit import lod
+
+    from yippy.performance import core_window_half_width_pix, truncation_core
+
+    coro = shipped_trunc_coro
+    pixel_lod = float(coro.pixel_scale_arcsec.value)
+    psf = coro.offax(separation_lod * lod, 0.0 * lod)
+    t_ref, a_ref = quintic_spline_core(psf, pixel_lod, SHIPPED_RATIO)
+    t_got, a_got = truncation_core(
+        jnp.asarray(psf),
+        SHIPPED_RATIO,
+        pixel_lod,
+        half_width_pix=core_window_half_width_pix(pixel_lod),
+    )
+    assert float(a_got) == pytest.approx(a_ref, rel=2e-3)
+    assert float(t_got) == pytest.approx(t_ref, rel=2e-3)
+
+
+@pytest.mark.parametrize("separation_lod", SHIPPED_PROBES_LOD)
+def test_core_converges_in_subpixels(shipped_trunc_coro, separation_lod):
+    """Ten subpixels per side agree with twenty to half a percent."""
+    import jax.numpy as jnp
+    from lod_unit import lod
+
+    from yippy.performance import core_window_half_width_pix, truncation_core
+
+    coro = shipped_trunc_coro
+    pixel_lod = float(coro.pixel_scale_arcsec.value)
+    psf = jnp.asarray(coro.offax(separation_lod * lod, 0.0 * lod))
+    half = core_window_half_width_pix(pixel_lod)
+    t10, a10 = truncation_core(
+        psf, SHIPPED_RATIO, pixel_lod, oversample=10, half_width_pix=half
+    )
+    t20, a20 = truncation_core(
+        psf, SHIPPED_RATIO, pixel_lod, oversample=20, half_width_pix=half
+    )
+    assert float(a10) == pytest.approx(float(a20), rel=5e-3)
+    assert float(t10) == pytest.approx(float(t20), rel=5e-3)
