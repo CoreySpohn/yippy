@@ -99,14 +99,12 @@ position angles as the image has pixels on a side, with Keys cubic
 interpolation, and the samples that fall inside the image are averaged. The
 value at each radius is therefore the mean intensity at that radius.
 
-An earlier version averaged the pixels whose centers fall in each of
-`floor(max(image_shape) / 2)` annular bins (about 1.4 pixels wide) and
-labeled each bin with its central radius. Against the exact azimuthal mean
-of a well-sampled map, that profile was off by 1 to 3 percent typically and
-by up to 15 percent near the sharp minima of a vortex coronagraph's leakage
-profile, because a bin mixes a range of radii wherever the profile is curved
-on the scale of the bin. The circle-sampled profile agrees with the exact
-mean to a few tenths of a percent except within the deepest nulls.
+Averaging the pixels whose centers fall in an annulus instead mixes a range of
+radii wherever the profile is curved on the scale of the annulus: with
+annuli about 1.4 pixels wide that is off by 1 to 3 percent typically, and by
+up to 15 percent near the sharp minima of a vortex coronagraph's leakage
+profile. The circle-sampled profile agrees with the exact mean to a few
+tenths of a percent except within the deepest nulls.
 
 At a stellar diameter between the tabulated ones, the profile is taken from
 the stellar intensity map interpolated to that diameter (`stellar_intens`),
