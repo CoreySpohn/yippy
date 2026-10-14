@@ -512,6 +512,10 @@ def truncation_core_area(
     ``psf_trunc_ratio`` times the brightest subpixel, times the subpixel
     solid angle. A PSF with no positive pixel gives the window's area.
 
+    Pixels outside the window that exceed the threshold are counted whole.
+    Only a PSF without a single compact core, such as one inside the inner
+    working angle, has any.
+
     The subpixel values are the PSF's band-limited (trigonometric)
     interpolant, a matrix DFT of the whole image evaluated on the window. An
     intensity PSF sampled finer than lambda/(2D) is determined exactly by its
@@ -531,7 +535,7 @@ def truncation_core_area(
         psf_trunc_ratio: Fraction of the peak that bounds the core.
         pixel_scale_lod: Pixel scale in lambda/D per pixel.
         oversample: Subpixels per pixel side.
-        half_width_pix: Window half-width in pixels; the window is clipped
+        half_width_pix: Half-width in pixels of the subpixel window, clipped
             to the image.
 
     Returns:
@@ -549,44 +553,125 @@ def truncation_core_area(
     fine = jnp.real(basis_y @ spectrum @ basis_x.T)
     peak = jnp.max(fine)
     core = (fine > psf_trunc_ratio * peak) | (fine == peak)
-    return jnp.sum(core) * (pixel_scale_lod / oversample) ** 2
+    rows = jnp.arange(ny)[:, None]
+    cols = jnp.arange(nx)[None, :]
+    in_window = (
+        (rows >= start_y)
+        & (rows < start_y + n_y)
+        & (cols >= start_x)
+        & (cols < start_x + n_x)
+    )
+    outside = jnp.sum((psf > psf_trunc_ratio * peak) & ~in_window)
+    return (
+        jnp.sum(core) * (pixel_scale_lod / oversample) ** 2
+        + outside * pixel_scale_lod**2
+    )
+
+
+CORE_AREA_STEP_LOD = 0.25
+"""Separation spacing, in lambda/D, of the tabulated truncation core area."""
+
+_PSF_BATCH = 16
+"""Off-axis PSFs synthesized per call when tabulating the core area."""
+
+
+def core_area_separations(
+    coro: Coronagraph, step_lod: float = CORE_AREA_STEP_LOD
+) -> np.ndarray:
+    """Separations, in lambda/D, at which the PSF is synthesized for the core area.
+
+    The core changes shape between the tabulated off-axis offsets, which can
+    be several lambda/D apart, so the core area is tabulated on a uniform
+    grid of ``step_lod`` from the smallest non-negative x offset to the
+    largest one whose PSF center still lies in the image
+    (``max_offset_in_image``). Tabulated offsets beyond the end of the grid
+    keep their own PSFs, since a synthesized PSF there is blank.
+
+    Args:
+        coro: Coronagraph instance.
+        step_lod: Grid spacing in lambda/D.
+
+    Returns:
+        1-D array of separations in lambda/D.
+    """
+    x_offsets = np.asarray(coro.offax.x_offsets, dtype=float)
+    x_offsets = x_offsets[x_offsets >= 0]
+    s_max = min(x_offsets.max(), coro.offax.max_offset_in_image.to(lod).value)
+    n_steps = int(np.floor((s_max - x_offsets.min()) / step_lod + 1e-9))
+    grid = x_offsets.min() + step_lod * np.arange(n_steps + 1)
+    if s_max - grid[-1] > 1e-9:
+        grid = np.append(grid, s_max)
+    return grid
+
+
+def _xaxis_y_offset(coro: Coronagraph) -> float:
+    """The tabulated y offset closest to zero, where the x-axis curves are read."""
+    y_offsets = np.asarray(coro.offax.y_offsets, dtype=float)
+    return float(y_offsets[np.argmin(np.abs(y_offsets))])
 
 
 def compute_truncation_core_area_curve(
     coro: Coronagraph,
     psf_trunc_ratio: float = 0.5,
     oversample: int = CORE_AREA_OVERSAMPLE,
+    separation_step_lod: float | None = CORE_AREA_STEP_LOD,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute core area using a PSF-truncation-ratio aperture.
 
     The core area is the solid angle (in (lam/D)**2) of the region where the
     PSF exceeds ``psf_trunc_ratio * peak``, AYO's ``omega_lod`` definition,
     measured on ``oversample`` subpixels per pixel side
-    (:func:`truncation_core_area`).
+    (:func:`truncation_core_area`). It is tabulated every
+    ``separation_step_lod`` on the PSF yippy synthesizes at each separation
+    (:func:`core_area_separations`), so between the package's off-axis
+    offsets the curve is the core area of the PSF an image simulator renders
+    there, not a straight line between the offsets' values.
 
     Args:
         coro: Coronagraph instance.
         psf_trunc_ratio: Fraction of PSF peak used as threshold.
         oversample: Subpixels per pixel side of the threshold mask.
+        separation_step_lod: Spacing of the separation grid in lambda/D.
+            ``None`` tabulates at the package's own off-axis offsets.
 
     Returns:
         ``(separations, core_areas)`` - sorted 1-D arrays, area in (lam/D)^2.
     """
     pix_lod = float(coro.pixel_scale_arcsec.value)
     half_width = core_window_half_width_pix(pix_lod)
-    positions = list(_iter_xaxis_positions(coro))
-    psfs = jnp.asarray(np.stack([pos.psf for pos in positions]))
-    areas = jax.vmap(
-        lambda psf: truncation_core_area(
-            psf,
-            psf_trunc_ratio,
-            pix_lod,
-            oversample=int(oversample),
-            half_width_pix=half_width,
+
+    def areas_of(psfs):
+        return np.asarray(
+            jax.vmap(
+                lambda psf: truncation_core_area(
+                    psf,
+                    psf_trunc_ratio,
+                    pix_lod,
+                    oversample=int(oversample),
+                    half_width_pix=half_width,
+                )
+            )(jnp.asarray(psfs))
         )
-    )(psfs)
-    separations = [pos.separation for pos in positions]
-    return _collect_and_sort(separations, list(np.asarray(areas)))
+
+    separations, core_areas = [], []
+    positions = list(_iter_xaxis_positions(coro))
+    if separation_step_lod is not None:
+        grid = core_area_separations(coro, separation_step_lod)
+        y0 = _xaxis_y_offset(coro)
+        for start in range(0, len(grid), _PSF_BATCH):
+            chunk = grid[start : start + _PSF_BATCH]
+            # A full batch every call, so the synthesis compiles once.
+            padded = jnp.asarray(np.pad(chunk, (0, _PSF_BATCH - len(chunk)), "edge"))
+            psfs = coro.offax.create_psfs(padded, jnp.full_like(padded, y0))
+            separations.extend(chunk.tolist())
+            core_areas.extend(areas_of(psfs)[: len(chunk)].tolist())
+        positions = [pos for pos in positions if pos.separation > grid[-1]]
+
+    if positions:
+        separations.extend(pos.separation for pos in positions)
+        core_areas.extend(areas_of(np.stack([pos.psf for pos in positions])).tolist())
+
+    return _collect_and_sort(separations, core_areas)
 
 
 def compute_occ_trans_curve(
