@@ -183,28 +183,60 @@ def axis_concentrated_coro(tmp_path_factory):
     return Coronagraph(package.path)
 
 
-def test_core_mean_intensity_is_measured_about_the_optical_axis(
-    axis_concentrated_coro,
-):
-    """The innermost core mean intensity is the light right at the axis.
+# A smooth ring about the optical axis: radius and Gaussian width in pixels.
+# The width keeps the map well sampled, so its azimuthal mean at any radius is
+# the ring function itself, and the ring is narrow enough that a profile taken
+# half a pixel off the axis on each axis is several percent off on its flanks.
+AXIS_RING_RADIUS_PIX = 10.0
+AXIS_RING_WIDTH_PIX = 3.0
 
-    The four pixels around the axis are the only ones within one pixel of it,
-    so the azimuthal mean intensity at the innermost tabulated separation is
-    exactly their level, and the next separation outward sees only the
-    background. A profile centered half a pixel off the axis on each axis mixes
-    the block with the background in its first bin and reads well below the
-    block level.
+
+def _axis_ring(r_pix):
+    return AXIS_BACKGROUND_LEVEL + AXIS_BLOCK_LEVEL * np.exp(
+        -0.5 * ((r_pix - AXIS_RING_RADIUS_PIX) / AXIS_RING_WIDTH_PIX) ** 2
+    )
+
+
+@pytest.fixture(scope="module")
+def axis_ring_coro(tmp_path_factory):
+    """A package whose stellar map is a smooth ring centered on the optical axis."""
+    import astropy.io.fits as pyfits
+    from synthetic_yip import write_synthetic_yip
+
+    from yippy import Coronagraph
+
+    package = write_synthetic_yip(tmp_path_factory.mktemp("ring") / "axis_ring")
+    path = package.path / "stellar_intens.fits"
+    with pyfits.open(path) as hdul:
+        header = hdul[0].header.copy()
+        shape = hdul[0].data.shape
+    axis = (package.npix - 1) / 2
+    yy, xx = np.mgrid[: shape[-2], : shape[-1]]
+    ring = _axis_ring(np.hypot(yy - axis, xx - axis))
+    maps = np.broadcast_to(ring, shape).copy()
+    pyfits.PrimaryHDU(maps, header=header).writeto(path, overwrite=True)
+    return Coronagraph(package.path)
+
+
+def test_core_mean_intensity_is_measured_about_the_optical_axis(axis_ring_coro):
+    """The core mean intensity is the ring's own radial function.
+
+    The map is a ring about the optical axis, so its azimuthal mean about the
+    axis at separation s is the ring function at s. A profile measured about
+    a center half a pixel off on each axis smears the ring and is off by up
+    to six percent on its flanks, far outside the tolerance.
     """
-    coro = axis_concentrated_coro
-    separations, profiles = coro.core_mean_intensity_curve(plot=False)
-    profile = profiles[next(iter(profiles))]
-
-    assert float(coro.core_mean_intensity(separations[0])) == pytest.approx(
-        AXIS_BLOCK_LEVEL, rel=1e-6
-    ), "the innermost mean intensity is not the level of the pixels at the axis"
-    assert profile[0] == pytest.approx(AXIS_BLOCK_LEVEL, rel=1e-6)
-    assert profile[1] == pytest.approx(AXIS_BACKGROUND_LEVEL, rel=1e-6), (
-        "light from the pixels at the axis leaked into the second radial bin"
+    coro = axis_ring_coro
+    pixel_lod = float(coro.pixel_scale_arcsec.value)
+    radii_pix = AXIS_RING_RADIUS_PIX + AXIS_RING_WIDTH_PIX * np.array(
+        [-2.0, -1.0, -0.5, 0.0, 0.3, 0.5, 1.0, 2.0]
+    )
+    got = np.array([coro.core_mean_intensity(r * pixel_lod) for r in radii_pix])
+    np.testing.assert_allclose(
+        got,
+        _axis_ring(radii_pix),
+        rtol=3e-3,
+        err_msg="the core mean intensity is not the azimuthal mean about the axis",
     )
 
 

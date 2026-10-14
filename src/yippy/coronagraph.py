@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from lod_unit import lod
+from scipy.interpolate import make_interp_spline
 from tqdm import tqdm
 
 from ._precision import dtype_tag, float_dtype
@@ -28,6 +29,7 @@ from .performance import (
     compute_radial_average,
     compute_raw_contrast_curve,
     compute_throughput_curve,
+    core_mean_intensity_profile,
     plot_performance_curve,
     stellar_axis_index,
 )
@@ -968,13 +970,15 @@ class Coronagraph:
     def core_mean_intensity(self, separation, stellar_diam=0.0 * lod):
         """Return core mean intensity at the given separation(s).
 
-        Interpolates over both separation and stellar angular diameter
-        using a 2D ``RegularGridInterpolator`` when multiple diameters
-        are available and a non-default diameter is requested.  Uses
-        the faster 1D spline for the default diameter (point source)
-        or when the yield input package contains only one diameter.
+        At a nonzero stellar diameter the profile is the azimuthal mean of
+        the stellar intensity map interpolated to that diameter
+        (:meth:`stellar_intens`), so the curve and the map describe the same
+        star at every diameter, not only at the tabulated ones. The profile is
+        computed on first use for each diameter and kept. The default
+        diameter (point source), or a package with a single diameter, uses
+        the precomputed profile.
 
-        Out-of-bounds queries on the 2D grid return ``NaN``.
+        Diameters outside the tabulated range return ``NaN``.
 
         Args:
             separation: Separation(s) in lambda/D.
@@ -997,23 +1001,28 @@ class Coronagraph:
         else:
             diam_val = float(stellar_diam)
 
-        # Use 1D spline for the default diameter (fast path, extrapolates
-        # naturally).  Route through 2D only for non-default diameters
-        # where cross-diameter interpolation is needed.
-        if diam_val != 0.0 and self.core_intensity_interp_2d is not None:
-            points = np.column_stack(
-                [
-                    sep_values,
-                    np.full_like(sep_values, diam_val),
-                ]
-            )
-            result = self.core_intensity_interp_2d(points)
-        else:
+        diams = np.asarray(self.stellar_intens.diams.value)
+        if diam_val == 0.0 or len(diams) < 2:
             result = self.core_intensity_interp(sep_values)
+        elif not diams.min() <= diam_val <= diams.max():
+            result = np.full(np.shape(sep_values), np.nan)
+        else:
+            result = self._core_intensity_interp_at(diam_val)(sep_values)
 
         if self._is_scalar_input(sep_values, separation):
             return float(result[0])
         return result
+
+    def _core_intensity_interp_at(self, diam_val: float):
+        """Separation interpolator of the core mean intensity at one diameter."""
+        interp = self._core_intensity_cache.get(diam_val)
+        if interp is None:
+            profile = core_mean_intensity_profile(self, diam_val * lod)
+            interp = make_interp_spline(
+                self.core_intensity_separations, profile, k=self.interp_order
+            )
+            self._core_intensity_cache[diam_val] = interp
+        return interp
 
     # ------------------------------------------------------------------
     # 2D map projections

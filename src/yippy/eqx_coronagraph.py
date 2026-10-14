@@ -35,12 +35,14 @@ from pathlib import Path
 
 import equinox as eqx
 import interpax
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array
 
 from ._precision import float_dtype
 from .coronagraph import Coronagraph
+from .performance import azimuthal_mean_profile, profile_radii, stellar_axis_index
 
 
 class EqxCoronagraph(eqx.Module):
@@ -95,9 +97,11 @@ class EqxCoronagraph(eqx.Module):
     _occ_trans_interp: interpax.CubicSpline
     _core_area_interp: interpax.CubicSpline
     _core_mean_intensity_interp: interpax.CubicSpline
-    _core_mean_intensity_interp_2d: interpax.Interpolator2D | None
     _has_2d_core_intensity: bool
     _diam_knot_range: tuple[float, float]
+    _profile_radii_pix: Array
+    _stellar_axis: tuple[float, float]
+    _interp_order: int
 
     # -- Static arrays (dynamic) -----------------------------------------
     sky_trans: Array
@@ -203,29 +207,17 @@ class EqxCoronagraph(eqx.Module):
             yippy_coro.core_intensity_interp
         )
 
-        # 2D core mean intensity (separation x stellar_diam) when available
-        if yippy_coro.core_intensity_interp_2d is not None:
-            rgi = yippy_coro.core_intensity_interp_2d
-            # RegularGridInterpolator stores grid points in .grid
-            sep_knots = jnp.asarray(rgi.grid[0], dtype=float_dtype())
-            diam_knots = jnp.asarray(rgi.grid[1], dtype=float_dtype())
-            values_2d = jnp.asarray(rgi.values, dtype=float_dtype())
-            self._core_mean_intensity_interp_2d = interpax.Interpolator2D(
-                sep_knots,
-                diam_knots,
-                values_2d,
-                method="linear",
-                extrap=False,  # returns NaN out-of-bounds
-            )
-            self._has_2d_core_intensity = True
-            self._diam_knot_range = (
-                float(jnp.min(diam_knots)),
-                float(jnp.max(diam_knots)),
-            )
-        else:
-            self._core_mean_intensity_interp_2d = None
-            self._has_2d_core_intensity = False
-            self._diam_knot_range = (0.0, 0.0)
+        # Core mean intensity at other diameters: the azimuthal mean of the
+        # interpolated stellar map on the profile radii, computed on demand.
+        diam_values = np.asarray(stellar.diams.value, dtype=float)
+        self._has_2d_core_intensity = len(diam_values) > 1
+        self._diam_knot_range = (float(diam_values.min()), float(diam_values.max()))
+        self._stellar_axis = tuple(float(c) for c in stellar_axis_index(yippy_coro))
+        self._profile_radii_pix = jnp.asarray(
+            profile_radii(stellar.psfs.shape[-2:], self._stellar_axis),
+            dtype=float_dtype(),
+        )
+        self._interp_order = int(yippy_coro.interp_order)
 
         # -- Sky transmission --------------------------------------------
         self.sky_trans = jnp.asarray(yippy_coro.sky_trans(), dtype=float_dtype())
@@ -347,9 +339,10 @@ class EqxCoronagraph(eqx.Module):
     ) -> Array:
         """Evaluate core mean intensity at the given separation.
 
-        Uses the 1D spline for the default diameter (point source) and
-        the 2D interpolant for non-default stellar diameters when
-        available.
+        Uses the 1D spline for the default diameter (point source). At any
+        other diameter the value is the azimuthal mean of
+        :meth:`stellar_intens` at that diameter, so the curve and the map
+        describe the same star.
 
         Args:
             separation_lod: Separation from the star in lambda/D.
@@ -367,17 +360,33 @@ class EqxCoronagraph(eqx.Module):
         if not self._has_2d_core_intensity:
             return point_source
 
-        # Select with jnp.where rather than a Python if, so that a traced
-        # stellar diameter works: a comparison against a tracer is itself a
-        # tracer and cannot be used in a branch. Both interpolants are
-        # therefore evaluated. The two-dimensional one returns NaN outside its
-        # diameter knots and a NaN in the branch that is not selected still
-        # propagates through a gradient, so the diameter is clamped into the
-        # tabulated range before it is evaluated.
+        # lax.cond rather than a Python if, so that a traced stellar diameter
+        # works, and rather than jnp.where, so that the point-source call does
+        # not pay for a profile. The diameter is clamped into the tabulated
+        # range, where the stellar map interpolant is defined.
         low, high = self._diam_knot_range
         clamped = jnp.clip(stellar_diam_lod, low, high)
-        extended = self._core_mean_intensity_interp_2d(separation_lod, clamped)
-        return jnp.where(stellar_diam_lod == 0.0, point_source, extended)
+        return jax.lax.cond(
+            stellar_diam_lod == 0.0,
+            lambda: jnp.asarray(point_source),
+            lambda: self._core_mean_intensity_at(separation_lod, clamped),
+        )
+
+    def _core_mean_intensity_at(self, separation_lod, stellar_diam_lod) -> Array:
+        """Azimuthal mean of the interpolated stellar map at one diameter."""
+        profile = azimuthal_mean_profile(
+            self.stellar_intens(stellar_diam_lod),
+            self._stellar_axis,
+            self._profile_radii_pix,
+        )
+        separations = self._profile_radii_pix * self.pixel_scale_lod
+        if self._interp_order <= 1:
+            interp = interpax.Interpolator1D(
+                separations, profile, method="linear", extrap=True
+            )
+        else:
+            interp = interpax.CubicSpline(separations, profile)
+        return interp(jnp.asarray(separation_lod, dtype=profile.dtype))
 
 
 # -- Helpers ------------------------------------------------------------------

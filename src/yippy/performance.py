@@ -19,10 +19,11 @@ from typing import TYPE_CHECKING
 import jax.numpy as jnp
 import numpy as np
 from hwoutils.constants import GAUSSIAN_FWHM_FACTOR
+from hwoutils.map_coordinates import map_coordinates
 from hwoutils.radial import radial_profile
 from hwoutils.transforms import resample_flux
 from lod_unit import lod
-from scipy.interpolate import RegularGridInterpolator, make_interp_spline
+from scipy.interpolate import make_interp_spline
 from scipy.optimize import root_scalar
 
 from .logger import logger
@@ -545,6 +546,90 @@ def stellar_axis_index(coro: Coronagraph) -> tuple[float, float]:
     )
 
 
+PROFILE_STEP_PIX = 0.25
+"""Radial spacing, in pixels, of the tabulated core mean intensity profile."""
+
+
+def profile_radii(shape: tuple[int, int], center: tuple[float, float]) -> np.ndarray:
+    """Radii, in pixels, at which the core mean intensity profile is tabulated.
+
+    The grid starts on the axis and steps by :data:`PROFILE_STEP_PIX` out to
+    the farthest pixel center of an image of ``shape`` measured from
+    ``center``, so the whole map is covered.
+
+    Args:
+        shape: ``(ny, nx)`` of the stellar intensity map.
+        center: ``(row, column)`` of the optical axis as pixel-center indices.
+
+    Returns:
+        1-D array of radii in pixels.
+    """
+    ny, nx = shape
+    cy, cx = center
+    r_max = max(np.hypot(y - cy, x - cx) for y in (0, ny - 1) for x in (0, nx - 1))
+    return np.arange(int(np.floor(r_max / PROFILE_STEP_PIX)) + 1) * PROFILE_STEP_PIX
+
+
+def azimuthal_mean_profile(image, center, radii_pix, n_theta=None):
+    """Azimuthal mean of an image on circles about ``center``.
+
+    Each circle is sampled at ``n_theta`` equally spaced position angles with
+    Keys cubic interpolation (:func:`hwoutils.map_coordinates.map_coordinates`)
+    and the samples that fall inside the image are averaged. This is the mean
+    intensity at exactly that radius. Averaging the pixels whose centers fall
+    in an annulus instead mixes a range of radii, which biases the profile by
+    several percent wherever it is curved on the scale of the annulus width.
+
+    Args:
+        image: 2-D array.
+        center: ``(row, column)`` of the circle centers as pixel-center
+            indices.
+        radii_pix: 1-D array of circle radii in pixels.
+        n_theta: Position angles per circle. Defaults to twice the larger
+            image dimension, more than the highest azimuthal harmonic a map
+            sampled at or above Nyquist carries at its corner radius.
+
+    Returns:
+        1-D JAX array, the mean of each circle's in-image samples (0 for a
+        circle with none).
+    """
+    image = jnp.asarray(image)
+    ny, nx = image.shape
+    if n_theta is None:
+        n_theta = 2 * max(ny, nx)
+    theta = jnp.arange(n_theta) * (2.0 * jnp.pi / n_theta)
+    radii = jnp.asarray(radii_pix, dtype=image.dtype)[:, None]
+    rows = center[0] + radii * jnp.sin(theta)[None, :]
+    cols = center[1] + radii * jnp.cos(theta)[None, :]
+    inside = (rows >= 0) & (rows <= ny - 1) & (cols >= 0) & (cols <= nx - 1)
+    values = map_coordinates(image, [rows, cols], order=3, mode="nearest")
+    count = jnp.sum(inside, axis=1)
+    total = jnp.sum(jnp.where(inside, values, 0.0), axis=1)
+    return jnp.where(count > 0, total / jnp.maximum(count, 1), 0.0)
+
+
+def core_mean_intensity_profile(coro: Coronagraph, stellar_diam) -> np.ndarray:
+    """Core mean intensity profile of the stellar map at ``stellar_diam``.
+
+    The profile is the azimuthal mean of ``coro.stellar_intens(stellar_diam)``
+    about the optical axis, on the radii of :func:`profile_radii`. Because it
+    is computed from the map itself, the curve at any diameter, tabulated or
+    not, is the azimuthal mean of the map an image simulator renders at that
+    diameter.
+
+    Args:
+        coro: Coronagraph instance.
+        stellar_diam: Stellar angular diameter (Quantity in lambda/D).
+
+    Returns:
+        1-D array, per pixel, on the radii of :func:`profile_radii`.
+    """
+    psf = np.asarray(coro.stellar_intens(stellar_diam), dtype=np.float64)
+    center = stellar_axis_index(coro)
+    radii = profile_radii(psf.shape, center)
+    return np.asarray(azimuthal_mean_profile(jnp.asarray(psf), center, radii))
+
+
 def compute_core_mean_intensity_curve(
     coro: Coronagraph,
     stellar_diam_values=None,
@@ -560,9 +645,10 @@ def compute_core_mean_intensity_curve(
         ``(separations_lod, intensities_dict)`` where *intensities_dict*
         maps each stellar diameter to its radial intensity profile: the
         azimuthal mean, about the optical axis (:func:`stellar_axis_index`),
-        of the fraction of the star's light falling on each pixel. The values
-        are per pixel, not per unit solid angle; divide by the squared pixel
-        scale in lambda/D for an intensity per (lambda/D)^2.
+        of the fraction of the star's light falling on each pixel, at each
+        separation (:func:`core_mean_intensity_profile`). The values are per
+        pixel, not per unit solid angle; divide by the squared pixel scale in
+        lambda/D for an intensity per (lambda/D)^2.
     """
     available_diams = coro.stellar_intens.diams
     if stellar_diam_values is None:
@@ -575,28 +661,12 @@ def compute_core_mean_intensity_curve(
                     f" not found in available diameters"
                 )
 
-    center = stellar_axis_index(coro)
-    pix_scale = coro.pixel_scale_arcsec.value
-
-    # Use the first diameter to determine bin count
-    stellar_psf = coro.stellar_intens(stellar_diam_values[0])
-    nbins = int(np.floor(np.max(stellar_psf.shape) / 2))
-
-    intensities: dict = {}
-    separations = None
-
-    for diam in stellar_diam_values:
-        psf = coro.stellar_intens(diam)
-        seps, profile = radial_profile(
-            jnp.asarray(np.asarray(psf, dtype=np.float64)),
-            pixel_scale_arcsec=pix_scale,
-            center=center,
-            nbins=nbins,
-        )
-        if separations is None:
-            separations = np.asarray(seps)
-        intensities[diam] = np.asarray(profile)
-
+    shape = coro.stellar_intens.psfs.shape[-2:]
+    radii = profile_radii(shape, stellar_axis_index(coro))
+    separations = radii * coro.pixel_scale_arcsec.value
+    intensities = {
+        diam: core_mean_intensity_profile(coro, diam) for diam in stellar_diam_values
+    }
     return separations, intensities
 
 
@@ -767,27 +837,10 @@ def compute_all_performance_curves(
         coro, stellar_diam_values=None
     )
     coro.core_intensity_dict = core_intensities
-
-    # Build a 2D interpolant over (separation, stellar_diam) when multiple
-    # diameters are available, matching EXOSIMS's RegularGridInterpolator
-    # approach.  Out-of-bounds queries return NaN rather than a physically
-    # meaningless fill value.
-    diams_sorted = sorted(core_intensities.keys(), key=lambda d: d.value)
-    diam_values = np.array([d.value for d in diams_sorted])
-    intensity_grid = np.column_stack(
-        [core_intensities[d] for d in diams_sorted]
-    )  # shape: (n_sep, n_diam)
-
-    if len(diam_values) > 1:
-        coro.core_intensity_interp_2d = RegularGridInterpolator(
-            (sep_core_intensity, diam_values),
-            intensity_grid,
-            method="linear",
-            bounds_error=False,
-            fill_value=np.nan,
-        )
-    else:
-        coro.core_intensity_interp_2d = None
+    coro.core_intensity_separations = sep_core_intensity
+    # Profiles at other diameters are computed from the interpolated map on
+    # first use, so they always agree with it (Coronagraph.core_mean_intensity).
+    coro._core_intensity_cache = {}
 
     # 1D spline for the default stellar diameter (backward compatibility
     # and fast path for the common single-diameter case)
