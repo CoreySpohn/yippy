@@ -12,10 +12,12 @@ delegation methods on it.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from hwoutils.constants import GAUSSIAN_FWHM_FACTOR
@@ -469,43 +471,122 @@ def compute_truncation_throughput_curve(
     return _collect_and_sort(separations, throughputs)
 
 
+CORE_AREA_OVERSAMPLE = 10
+"""Subpixels per pixel side of the threshold mask that measures the core area."""
+
+CORE_WINDOW_LOD = 3.0
+"""Half-width, in lambda/D, of the window about the PSF peak holding the core."""
+
+
+def core_window_half_width_pix(pixel_scale_lod: float) -> int:
+    """Half-width in pixels of the core-area window for a pixel scale."""
+    return int(np.ceil(CORE_WINDOW_LOD / pixel_scale_lod))
+
+
+def _band_limited_samples(spectrum, start, n_pix, oversample):
+    """Inverse-DFT basis onto the subpixel centers of ``n_pix`` pixels.
+
+    Row ``j`` evaluates the image's trigonometric interpolant at pixel
+    coordinate ``start + (j + 0.5) / oversample - 0.5``, the center of
+    subpixel ``j`` counted from pixel ``start``.
+    """
+    size = spectrum.shape[0]
+    coords = start + (jnp.arange(n_pix * oversample) + 0.5) / oversample - 0.5
+    freqs = jnp.fft.fftfreq(size)
+    return jnp.exp(2j * jnp.pi * coords[:, None] * freqs[None, :]) / size
+
+
+@functools.partial(jax.jit, static_argnames=("oversample", "half_width_pix"))
+def truncation_core_area(
+    psf,
+    psf_trunc_ratio,
+    pixel_scale_lod,
+    oversample: int = CORE_AREA_OVERSAMPLE,
+    half_width_pix: int = 12,
+):
+    """Solid angle of the region where a PSF exceeds a fraction of its peak.
+
+    The PSF is evaluated at the centers of ``oversample`` x ``oversample``
+    subpixels per pixel over a window of ``2 * half_width_pix + 1`` pixels
+    about its brightest pixel, and the area is the number of subpixels above
+    ``psf_trunc_ratio`` times the brightest subpixel, times the subpixel
+    solid angle. A PSF with no positive pixel gives the window's area.
+
+    The subpixel values are the PSF's band-limited (trigonometric)
+    interpolant, a matrix DFT of the whole image evaluated on the window. An
+    intensity PSF sampled finer than lambda/(2D) is determined exactly by its
+    samples, and yippy synthesizes off-axis PSFs between tabulated offsets
+    with Fourier shifts of the same kind. A local cubic kernel, by contrast,
+    flattens the core and overstates the area by up to about one percent at
+    0.25 lambda/D sampling. Counting whole pixels, even twice-oversampled
+    ones, puts the area on a coarse lattice that moves by several percent
+    with the source's subpixel position; ten subpixels per side bring the
+    lattice error below about half a percent.
+
+    The shapes are fixed by the static arguments, so the function is
+    ``jit``-compiled once and can be ``vmap``-ped over a stack of PSFs.
+
+    Args:
+        psf: 2-D PSF image.
+        psf_trunc_ratio: Fraction of the peak that bounds the core.
+        pixel_scale_lod: Pixel scale in lambda/D per pixel.
+        oversample: Subpixels per pixel side.
+        half_width_pix: Window half-width in pixels; the window is clipped
+            to the image.
+
+    Returns:
+        Scalar core area in (lambda/D)^2.
+    """
+    ny, nx = psf.shape
+    n_y = min(2 * half_width_pix + 1, ny)
+    n_x = min(2 * half_width_pix + 1, nx)
+    row, col = jnp.unravel_index(jnp.argmax(psf), psf.shape)
+    start_y = jnp.clip(row - half_width_pix, 0, ny - n_y)
+    start_x = jnp.clip(col - half_width_pix, 0, nx - n_x)
+    spectrum = jnp.fft.fft2(psf)
+    basis_y = _band_limited_samples(spectrum, start_y, n_y, oversample)
+    basis_x = _band_limited_samples(spectrum.T, start_x, n_x, oversample)
+    fine = jnp.real(basis_y @ spectrum @ basis_x.T)
+    peak = jnp.max(fine)
+    core = (fine > psf_trunc_ratio * peak) | (fine == peak)
+    return jnp.sum(core) * (pixel_scale_lod / oversample) ** 2
+
+
 def compute_truncation_core_area_curve(
     coro: Coronagraph,
     psf_trunc_ratio: float = 0.5,
-    oversample: int | None = None,
+    oversample: int = CORE_AREA_OVERSAMPLE,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute core area using a PSF-truncation-ratio aperture.
 
-    The core area is the solid angle (in (lam/D)**2) of all oversampled pixels
-    that exceed ``psf_trunc_ratio * peak``.  This matches AYO's
-    ``omega_lod`` calculation.
+    The core area is the solid angle (in (lam/D)**2) of the region where the
+    PSF exceeds ``psf_trunc_ratio * peak``, AYO's ``omega_lod`` definition,
+    measured on ``oversample`` subpixels per pixel side
+    (:func:`truncation_core_area`).
 
     Args:
         coro: Coronagraph instance.
         psf_trunc_ratio: Fraction of PSF peak used as threshold.
-        oversample: Oversampling factor.  ``None`` uses AYO's rule.
+        oversample: Subpixels per pixel side of the threshold mask.
 
     Returns:
         ``(separations, core_areas)`` - sorted 1-D arrays, area in (lam/D)^2.
     """
-    pix_lod = coro.pixel_scale_arcsec.value
-    oversample = resolve_oversample(coro, oversample)
-
-    # Solid angle of one oversampled pixel in (lam/D)**2
-    os_pix_lod = pix_lod / oversample
-    pix_solid_angle = os_pix_lod**2
-
-    separations, core_areas = [], []
-
-    for pos in _iter_xaxis_positions(coro):
-        psf_os = _oversample_psf(pos.psf, pix_lod, oversample)
-        mask = _threshold_mask(psf_os, psf_trunc_ratio)
-
-        area = mask.sum() * pix_solid_angle
-        separations.append(pos.separation)
-        core_areas.append(area)
-
-    return _collect_and_sort(separations, core_areas)
+    pix_lod = float(coro.pixel_scale_arcsec.value)
+    half_width = core_window_half_width_pix(pix_lod)
+    positions = list(_iter_xaxis_positions(coro))
+    psfs = jnp.asarray(np.stack([pos.psf for pos in positions]))
+    areas = jax.vmap(
+        lambda psf: truncation_core_area(
+            psf,
+            psf_trunc_ratio,
+            pix_lod,
+            oversample=int(oversample),
+            half_width_pix=half_width,
+        )
+    )(psfs)
+    separations = [pos.separation for pos in positions]
+    return _collect_and_sort(separations, list(np.asarray(areas)))
 
 
 def compute_occ_trans_curve(
@@ -727,6 +808,11 @@ def compute_all_performance_curves(
     for different ones. The stored contrast is always unfloored; the floor is
     applied after loading.
 
+    ``oversample`` sets the throughput and contrast apertures. The truncation
+    core area is always measured on :data:`CORE_AREA_OVERSAMPLE` subpixels
+    per pixel side, because a core area counted in coarser cells moves by
+    whole cells as the source moves within a pixel.
+
     Returns a dict of all curve data for convenience.
     """
     if stellar_diam is None:
@@ -806,7 +892,7 @@ def compute_all_performance_curves(
             f"Computing core area curve (PSF trunc ratio = {psf_trunc_ratio})..."
         )
         sep_ca, core_area = compute_truncation_core_area_curve(
-            coro, psf_trunc_ratio=psf_trunc_ratio, oversample=oversample
+            coro, psf_trunc_ratio=psf_trunc_ratio
         )
     else:
         logger.info("Computing core area curve...")

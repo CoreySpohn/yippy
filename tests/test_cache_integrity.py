@@ -212,12 +212,15 @@ def test_explicit_oversampling_does_not_feed_automatic_cache(tmp_path, monkeypat
 
 
 def test_default_construction_uses_oversample_two(tmp_path, monkeypatch):
-    """The cold constructor keeps its oversampling factor of 2 in both modes."""
+    """The cold constructor keeps its oversampling factor of 2 in both modes.
+
+    This covers the cached throughput and contrast tables. The truncation
+    core area is not cached and is measured on its own subpixel grid.
+    """
     seen = []
     for name in (
         "compute_throughput_curve",
         "compute_truncation_throughput_curve",
-        "compute_truncation_core_area_curve",
         "compute_raw_contrast_curve",
     ):
         original = getattr(perf, name)

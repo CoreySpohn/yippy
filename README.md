@@ -149,6 +149,8 @@ When `psf_trunc_ratio` is set (e.g. `Coronagraph(path, psf_trunc_ratio=0.3)`),
 throughput and core area are computed using an adaptive aperture that includes
 all oversampled pixels exceeding `ratio * peak`. This matches AYO's
 `photap_frac` / `omega_lod` calculation and is recommended for ETC integration.
+The core area is the area of that region measured on a 10x subpixel grid, so it
+does not jump by whole pixels as the source moves within a pixel.
 
 ## Example data
 
