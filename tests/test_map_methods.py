@@ -30,7 +30,9 @@ class TestSeparationMap:
         cy, cx = round(coro.header.ycenter), round(coro.header.xcenter)
         d = 10
         assert r[cy, cx + d] == pytest.approx(r[cy + d, cx], rel=1e-10)
-        assert r[cy, cx + d] == pytest.approx(r[cy, cx - d], rel=1e-10)
+        # The axis sits between pixels cx - 1 and cx, so cx + d mirrors to
+        # cx - 1 - d.
+        assert r[cy, cx + d] == pytest.approx(r[cy, cx - 1 - d], rel=1e-10)
 
     def test_all_nonnegative(self, coro):
         """All separations are non-negative."""
@@ -52,7 +54,7 @@ class TestCoreMeanIntensityMap:
         cy, cx = round(coro.header.ycenter), round(coro.header.xcenter)
         d = 10
         assert m[cy, cx + d] == pytest.approx(m[cy + d, cx], rel=1e-10)
-        assert m[cy, cx + d] == pytest.approx(m[cy - d, cx], rel=1e-10)
+        assert m[cy, cx + d] == pytest.approx(m[cy - 1 - d, cx], rel=1e-10)
 
     def test_positive_values(self, coro):
         """All values are non-negative."""

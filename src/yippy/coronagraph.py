@@ -29,6 +29,7 @@ from .performance import (
     compute_raw_contrast_curve,
     compute_throughput_curve,
     plot_performance_curve,
+    stellar_axis_index,
 )
 from .sky_trans import SkyTrans
 from .stellar_intens import StellarIntens
@@ -982,7 +983,11 @@ class Coronagraph:
                 0.0*lod (point source).
 
         Returns:
-            float or numpy.ndarray: Core mean intensity value(s).
+            float or numpy.ndarray: Core mean intensity value(s): the
+            azimuthal mean, about the optical axis, of the fraction of the
+            star's light falling on one pixel. The unit is per pixel of
+            ``pixel_scale_arcsec`` (lambda/D per pixel), not per unit solid
+            angle; divide by the squared pixel scale for (lambda/D)^-2.
         """
         sep_values = self._convert_separation_to_lod(separation)
 
@@ -1015,14 +1020,19 @@ class Coronagraph:
     # ------------------------------------------------------------------
 
     def separation_map(self):
-        """Pixel-grid separations from the coronagraph center in lam/D.
+        """Pixel-grid separations from the optical axis in lam/D.
+
+        The axis is the one the core mean intensity profile is measured about
+        (:func:`yippy.performance.stellar_axis_index`): half a pixel before
+        the header's ``XCENTER`` and ``YCENTER``, between the four central
+        pixels of an even-sized map. The 2D map projections built on this
+        grid therefore agree with their 1D curves.
 
         Returns:
             numpy.ndarray: (npix, npix) array of separations.
         """
         npix = self.npixels
-        cx = self.header.xcenter
-        cy = self.header.ycenter
+        cy, cx = stellar_axis_index(self)
         y, x = np.mgrid[:npix, :npix]
         r_pix = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
         return r_pix * self.pixel_scale_arcsec.value

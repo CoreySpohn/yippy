@@ -213,8 +213,8 @@ def compute_radial_average(
     Args:
         image: 2D numpy array.
         pixel_scale_value: Pixel scale in lambda/D per pixel (float).
-        center: ``(cy, cx)`` pixel coordinates of centre. Defaults to
-            image centre.
+        center: ``(cy, cx)`` pixel coordinates of center. Defaults to
+            image center.
         nbins: Number of radial bins. Defaults to ``floor(max_dim / 2)``.
 
     Returns:
@@ -524,6 +524,27 @@ def compute_occ_trans_curve(
     return compute_radial_average(sky_trans_data, coro.pixel_scale_arcsec.value)
 
 
+def stellar_axis_index(coro: Coronagraph) -> tuple[float, float]:
+    """Pixel-center index ``(row, column)`` of the optical axis in the stellar maps.
+
+    A package's ``XCENTER`` and ``YCENTER`` (or ``npix / 2`` when they are
+    absent) count pixels from the array's outer corner. With integer indices
+    labeling pixel centers the axis therefore sits half a pixel earlier: a
+    256-pixel map with ``XCENTER = 128`` is point-symmetric about index 127.5,
+    between the four central pixels.
+
+    Args:
+        coro: Coronagraph instance.
+
+    Returns:
+        ``(row, column)`` of the optical axis as 0-based pixel-center indices.
+    """
+    return (
+        coro.stellar_intens.center_y - 0.5,
+        coro.stellar_intens.center_x - 0.5,
+    )
+
+
 def compute_core_mean_intensity_curve(
     coro: Coronagraph,
     stellar_diam_values=None,
@@ -537,7 +558,11 @@ def compute_core_mean_intensity_curve(
 
     Returns:
         ``(separations_lod, intensities_dict)`` where *intensities_dict*
-        maps each stellar diameter to its radial intensity profile.
+        maps each stellar diameter to its radial intensity profile: the
+        azimuthal mean, about the optical axis (:func:`stellar_axis_index`),
+        of the fraction of the star's light falling on each pixel. The values
+        are per pixel, not per unit solid angle; divide by the squared pixel
+        scale in lambda/D for an intensity per (lambda/D)^2.
     """
     available_diams = coro.stellar_intens.diams
     if stellar_diam_values is None:
@@ -550,7 +575,7 @@ def compute_core_mean_intensity_curve(
                     f" not found in available diameters"
                 )
 
-    center = (coro.stellar_intens.center_y, coro.stellar_intens.center_x)
+    center = stellar_axis_index(coro)
     pix_scale = coro.pixel_scale_arcsec.value
 
     # Use the first diameter to determine bin count
