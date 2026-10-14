@@ -20,9 +20,7 @@ from .header import HeaderData
 from .logger import logger
 from .offjax import OffJAX
 from .performance import (
-    compute_all_performance_curves as _compute_all_perf,
-)
-from .performance import (
+    CORE_OVERSAMPLE,
     compute_core_area_curve,
     compute_core_mean_intensity_curve,
     compute_occ_trans_curve,
@@ -32,6 +30,9 @@ from .performance import (
     core_mean_intensity_profile,
     plot_performance_curve,
     stellar_axis_index,
+)
+from .performance import (
+    compute_all_performance_curves as _compute_all_perf,
 )
 from .sky_trans import SkyTrans
 from .stellar_intens import StellarIntens
@@ -605,7 +606,8 @@ class Coronagraph:
         the identity covers everything those depend on: the source files and
         their generation, realized resolution and dtype, the circular aperture
         radius (which sets contrast even in truncation mode), the aperture
-        mode and threshold, the effective oversampling, and the stellar
+        mode and threshold, the effective oversampling (and the subpixel
+        factor of the truncation core), and the stellar
         diameter of the contrast calculation. Settings applied after loading
         (contrast floor, inscribed-diameter scaling, interpolation order) and
         quantities recomputed on every construction (core area, occulter
@@ -622,6 +624,7 @@ class Coronagraph:
                 "aperture_radius_lod": aperture_radius_lod,
                 "psf_trunc_ratio": psf_trunc_ratio,
                 "oversample": oversample,
+                "core_oversample": None if psf_trunc_ratio is None else CORE_OVERSAMPLE,
                 "stellar_diam_lod": getattr(stellar_diam, "value", stellar_diam),
             }
         )

@@ -1,14 +1,17 @@
-"""The core area is the area of the PSF core the image simulator renders.
+"""The core area and throughput are those of the PSF the image simulator renders.
 
 With a PSF truncation ratio ``r`` the core of an off-axis PSF is the region
-where its intensity exceeds ``r`` times its peak, and ``Coronagraph.core_area``
-is the solid angle of that region in (lambda/D)^2. It is the photometric
-aperture an exposure-time calculator multiplies the leaked starlight and the
-background by, so at every separation, on or between the tabulated offsets, it
-must be the core area of the PSF yippy synthesizes for a source there.
+where its intensity exceeds ``r`` times its peak. ``Coronagraph.core_area`` is
+the solid angle of that region in (lambda/D)^2, the photometric aperture an
+exposure-time calculator multiplies the leaked starlight and the background by,
+and ``Coronagraph.throughput`` is the fraction of the source's light inside it,
+which sets the planet count rate. At every separation, on or between the
+tabulated offsets, both must be those of the PSF yippy synthesizes for a source
+there.
 
 The references here do not come from the code under test. A circular Gaussian
-of standard deviation sigma has the core area ``2 pi sigma^2 ln(1 / r)``. Between
+of standard deviation sigma and flux F has the core area
+``2 pi sigma^2 ln(1 / r)`` and the core throughput ``F (1 - r)``. Between
 two tabulated offsets yippy synthesizes the PSF as the two neighboring PSFs
 shifted onto the source and mixed with weights linear in separation; for
 concentric Gaussians that mixture is radially symmetric and its core radius is
@@ -40,6 +43,12 @@ OFFSET_GRIDS = {"on_pixels": (0.0, 0.5), "off_pixels": (0.07, 0.37)}
 # cells cross the threshold together, sits within 0.8 percent of the closed
 # form, and off-center cores sit closer.
 AREA_TOL = 1e-2
+
+# Relative tolerance on the core throughput. A lattice error in the area moves
+# the throughput by the light in the boundary cells, which sit at the threshold
+# intensity, so the throughput error is r ln(1/r) / (1 - r) times the area
+# error: about 0.7 of it at r = 0.5.
+THROUGHPUT_TOL = 1e-2
 
 # A package whose PSF width grows with separation, tabulated every 2 lambda/D,
 # so a source between offsets gets a PSF whose core is neither neighbor's.
@@ -122,13 +131,13 @@ def growth_package(tmp_path_factory):
     return package
 
 
-def mixture_core_area(package, separation_lod, ratio):
-    """Core area of the PSF yippy synthesizes between two Gaussian offsets.
+def mixture_core(package, separation_lod, ratio):
+    """Core area and throughput of the PSF yippy synthesizes between two offsets.
 
     The two neighboring PSFs are shifted onto the source and mixed with
     weights ``1 - u`` and ``u``, ``u`` the fractional position between them,
     so the PSF is a sum of two concentric Gaussians of known widths and
-    fluxes.
+    fluxes, and the light inside a radius is a sum of closed forms.
     """
     nodes = np.sort(package.offsets[:, 0])
     lo = nodes[nodes <= separation_lod].max()
@@ -138,13 +147,22 @@ def mixture_core_area(package, separation_lod, ratio):
     for node, weight in ((lo, 1.0 - u), (hi, u)):
         sigma = growth_sigma(node)
         flux = weight * package.psf_flux * package.occulter(node)
-        terms.append((flux / (2.0 * np.pi * sigma**2), sigma))
+        terms.append((flux, sigma))
 
     def profile(rho):
-        return sum(a * np.exp(-(rho**2) / (2.0 * s**2)) for a, s in terms)
+        return sum(
+            f / (2.0 * np.pi * s**2) * np.exp(-(rho**2) / (2.0 * s**2))
+            for f, s in terms
+        )
 
     radius = brentq(lambda rho: profile(rho) - ratio * profile(0.0), 0.0, 10.0)
-    return np.pi * radius**2
+    throughput = sum(f * (1.0 - np.exp(-(radius**2) / (2.0 * s**2))) for f, s in terms)
+    return np.pi * radius**2, throughput
+
+
+def mixture_core_area(package, separation_lod, ratio):
+    """Core area of the PSF yippy synthesizes between two Gaussian offsets."""
+    return mixture_core(package, separation_lod, ratio)[0]
 
 
 @pytest.mark.parametrize("ratio", TRUNC_RATIOS)
@@ -169,13 +187,14 @@ def test_core_area_follows_the_synthesized_psf_between_offsets(growth_package, r
     )
 
 
-def fourier_upsampled_core_area(psf, pixel_lod, ratio, factor):
-    """Core area of a PSF from its band-limited (zero-padded FFT) upsampling.
+def fourier_upsampled_core(psf, pixel_lod, ratio, factor):
+    """Core area and throughput of a PSF from its band-limited upsampling.
 
     A sampled PSF at or above Nyquist determines the continuous intensity,
     and zero-padding its spectrum evaluates that intensity on a grid
-    ``factor`` times finer, so counting the finer cells above threshold
-    converges to the continuous core area without a spatial kernel.
+    ``factor`` times finer, so counting (and summing) the finer cells above
+    threshold converges to the continuous core area (and the light inside
+    it) without a spatial kernel.
     """
     psf = np.asarray(psf, dtype=np.float64)
     n = psf.shape[0]
@@ -186,7 +205,9 @@ def fourier_upsampled_core_area(psf, pixel_lod, ratio, factor):
     padded[start : start + n, start : start + n] = spec
     fine = np.real(np.fft.ifft2(np.fft.ifftshift(padded)))
     above = fine > ratio * fine.max()
-    return above.sum() * (pixel_lod / factor) ** 2
+    # The inverse transform of the padded spectrum carries 1 / factor^2, so
+    # each fine cell already holds its share of the pixel's light.
+    return above.sum() * (pixel_lod / factor) ** 2, fine[above].sum()
 
 
 SHIPPED_RATIO = 0.3
@@ -226,6 +247,73 @@ def test_shipped_core_area_matches_the_band_limited_psf(
     y_offsets = np.asarray(coro.offax.y_offsets, dtype=float)
     y0 = float(y_offsets[np.argmin(np.abs(y_offsets))])
     psf = coro.offax(separation_lod * lod, y0 * lod)
-    expected = fourier_upsampled_core_area(psf, pixel_lod, SHIPPED_RATIO, factor=8)
+    expected, _ = fourier_upsampled_core(psf, pixel_lod, SHIPPED_RATIO, factor=8)
     got = coro.core_area(separation_lod)
     assert got == pytest.approx(expected, rel=AREA_TOL)
+
+
+@pytest.mark.parametrize("ratio", TRUNC_RATIOS)
+def test_core_throughput_of_a_gaussian_is_its_closed_form(gaussian_package, ratio):
+    """The core throughput of a Gaussian PSF is ``(1 - r)`` times its flux.
+
+    yippy mixes the two neighboring PSFs with weights linear in separation,
+    so the flux of the PSF it synthesizes is the neighbors' fluxes
+    interpolated linearly. Summing the light in whole twice-oversampled
+    pixels misplaces the core boundary and is off by several percent for a
+    core centered on a pixel.
+    """
+    coro = Coronagraph(gaussian_package.path, psf_trunc_ratio=ratio)
+    nodes = np.sort(gaussian_package.offsets[:, 0])
+    flux = np.interp(
+        GAUSSIAN_SEPARATIONS_LOD,
+        nodes,
+        gaussian_package.psf_flux * gaussian_package.occulter(nodes),
+    )
+    expected = flux * (1.0 - ratio)
+    got = np.array([coro.throughput(s) for s in GAUSSIAN_SEPARATIONS_LOD])
+    err = np.abs(got / expected - 1.0)
+    assert err.max() <= THROUGHPUT_TOL, (
+        f"core throughput departs from F (1 - r) by {err.max():.4f} at "
+        f"{GAUSSIAN_SEPARATIONS_LOD[int(np.argmax(err))]} lambda/D: got "
+        f"{np.round(got, 5)}, expected {np.round(expected, 5)}"
+    )
+
+
+@pytest.mark.parametrize("ratio", TRUNC_RATIOS)
+def test_core_throughput_follows_the_synthesized_psf_between_offsets(
+    growth_package, ratio
+):
+    """Between tabulated offsets the core throughput is that of the rendered PSF.
+
+    Interpolating the tabulated throughputs linearly in separation instead
+    overstates it by 2 to 7 percent here.
+    """
+    coro = Coronagraph(growth_package.path, psf_trunc_ratio=ratio)
+    separations = np.array([2.5, 3.0, 3.37, 3.5, 4.6, 5.25])
+    expected = np.array(
+        [mixture_core(growth_package, s, ratio)[1] for s in separations]
+    )
+    got = np.array([coro.throughput(s) for s in separations])
+    err = np.abs(got / expected - 1.0)
+    assert err.max() <= THROUGHPUT_TOL, (
+        f"core throughput departs from the synthesized PSF's by {err.max():.4f} "
+        f"at {separations[int(np.argmax(err))]} lambda/D: got {np.round(got, 4)}, "
+        f"expected {np.round(expected, 4)}"
+    )
+
+
+@pytest.mark.parametrize("separation_lod", (3.3, 4.7, 6.1, 9.4))
+def test_shipped_core_throughput_matches_the_band_limited_psf(
+    shipped_trunc_coro, separation_lod
+):
+    """On a shipped package the throughput is the light in the rendered core."""
+    from lod_unit import lod
+
+    coro = shipped_trunc_coro
+    pixel_lod = float(coro.pixel_scale_arcsec.value)
+    y_offsets = np.asarray(coro.offax.y_offsets, dtype=float)
+    y0 = float(y_offsets[np.argmin(np.abs(y_offsets))])
+    psf = coro.offax(separation_lod * lod, y0 * lod)
+    _, expected = fourier_upsampled_core(psf, pixel_lod, SHIPPED_RATIO, factor=8)
+    got = coro.throughput(separation_lod)
+    assert got == pytest.approx(expected, rel=THROUGHPUT_TOL)

@@ -433,46 +433,8 @@ def compute_core_area_curve(
     return _collect_and_sort(separations, core_areas)
 
 
-def compute_truncation_throughput_curve(
-    coro: Coronagraph,
-    psf_trunc_ratio: float = 0.5,
-    oversample: int | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute throughput using a PSF-truncation-ratio aperture.
-
-    Instead of a fixed circular aperture, selects all pixels where the
-    oversampled PSF exceeds ``psf_trunc_ratio * peak``.  Throughput is the
-    sum of those pixels (after area-scaled cubic interpolation).  This
-    matches the ``photap_frac`` calculation in AYO's ``load_coronagraph.pro``.
-
-    Args:
-        coro: Coronagraph instance.
-        psf_trunc_ratio: Fraction of the PSF peak used as threshold
-            (e.g. 0.5 keeps all pixels > 50% of the peak).
-        oversample: Oversampling factor.  ``None`` uses AYO's rule:
-            ``ceil(pixscale / 0.05)``.
-
-    Returns:
-        ``(separations, throughputs)`` - sorted 1-D arrays.
-    """
-    pix_lod = coro.pixel_scale_arcsec.value
-    oversample = resolve_oversample(coro, oversample)
-
-    separations, throughputs = [], []
-
-    for pos in _iter_xaxis_positions(coro):
-        psf_os = _oversample_psf(pos.psf, pix_lod, oversample)
-        mask = _threshold_mask(psf_os, psf_trunc_ratio)
-
-        throughput = psf_os[mask].sum()
-        separations.append(pos.separation)
-        throughputs.append(throughput)
-
-    return _collect_and_sort(separations, throughputs)
-
-
-CORE_AREA_OVERSAMPLE = 10
-"""Subpixels per pixel side of the threshold mask that measures the core area."""
+CORE_OVERSAMPLE = 10
+"""Subpixels per pixel side of the threshold mask that measures the core."""
 
 CORE_WINDOW_LOD = 3.0
 """Half-width, in lambda/D, of the window about the PSF peak holding the core."""
@@ -497,20 +459,22 @@ def _band_limited_samples(spectrum, start, n_pix, oversample):
 
 
 @functools.partial(jax.jit, static_argnames=("oversample", "half_width_pix"))
-def truncation_core_area(
+def truncation_core(
     psf,
     psf_trunc_ratio,
     pixel_scale_lod,
-    oversample: int = CORE_AREA_OVERSAMPLE,
+    oversample: int = CORE_OVERSAMPLE,
     half_width_pix: int = 12,
 ):
-    """Solid angle of the region where a PSF exceeds a fraction of its peak.
+    """Throughput and area of the region where a PSF exceeds a fraction of its peak.
 
     The PSF is evaluated at the centers of ``oversample`` x ``oversample``
     subpixels per pixel over a window of ``2 * half_width_pix + 1`` pixels
-    about its brightest pixel, and the area is the number of subpixels above
-    ``psf_trunc_ratio`` times the brightest subpixel, times the subpixel
-    solid angle. A PSF with no positive pixel gives the window's area.
+    about its brightest pixel. The core is the set of subpixels above
+    ``psf_trunc_ratio`` times the brightest subpixel: its area is their
+    number times the subpixel solid angle, and its throughput is the sum of
+    their values, each the PSF's flux per pixel at that point, divided by
+    ``oversample**2``. A PSF with no positive pixel gives the window.
 
     Pixels outside the window that exceed the threshold are counted whole.
     Only a PSF without a single compact core, such as one inside the inner
@@ -539,7 +503,8 @@ def truncation_core_area(
             to the image.
 
     Returns:
-        Scalar core area in (lambda/D)^2.
+        ``(throughput, area)``: the core throughput in the PSF's flux units
+        and the core area in (lambda/D)^2.
     """
     ny, nx = psf.shape
     n_y = min(2 * half_width_pix + 1, ny)
@@ -561,27 +526,30 @@ def truncation_core_area(
         & (cols >= start_x)
         & (cols < start_x + n_x)
     )
-    outside = jnp.sum((psf > psf_trunc_ratio * peak) & ~in_window)
-    return (
-        jnp.sum(core) * (pixel_scale_lod / oversample) ** 2
-        + outside * pixel_scale_lod**2
+    outside = (psf > psf_trunc_ratio * peak) & ~in_window
+    throughput = jnp.sum(jnp.where(core, fine, 0.0)) / oversample**2 + jnp.sum(
+        jnp.where(outside, psf, 0.0)
     )
+    area = (
+        jnp.sum(core) * (pixel_scale_lod / oversample) ** 2
+        + jnp.sum(outside) * pixel_scale_lod**2
+    )
+    return throughput, area
 
 
-CORE_AREA_STEP_LOD = 0.25
-"""Separation spacing, in lambda/D, of the tabulated truncation core area."""
+CORE_STEP_LOD = 0.25
+"""Separation spacing, in lambda/D, of the tabulated truncation core curves."""
 
 _PSF_BATCH = 16
-"""Off-axis PSFs synthesized per call when tabulating the core area."""
+"""Off-axis PSFs synthesized per call when tabulating the core curves."""
 
 
-def core_area_separations(
-    coro: Coronagraph, step_lod: float = CORE_AREA_STEP_LOD
-) -> np.ndarray:
-    """Separations, in lambda/D, at which the PSF is synthesized for the core area.
+def core_separations(coro: Coronagraph, step_lod: float = CORE_STEP_LOD) -> np.ndarray:
+    """Separations, in lambda/D, at which the PSF is synthesized for the core curves.
 
     The core changes shape between the tabulated off-axis offsets, which can
-    be several lambda/D apart, so the core area is tabulated on a uniform
+    be several lambda/D apart, so the core throughput and area are tabulated
+    on a uniform
     grid of ``step_lod`` from the smallest non-negative x offset to the
     largest one whose PSF center still lies in the image
     (``max_offset_in_image``). Tabulated offsets beyond the end of the grid
@@ -610,22 +578,23 @@ def _xaxis_y_offset(coro: Coronagraph) -> float:
     return float(y_offsets[np.argmin(np.abs(y_offsets))])
 
 
-def compute_truncation_core_area_curve(
+def compute_truncation_curves(
     coro: Coronagraph,
     psf_trunc_ratio: float = 0.5,
-    oversample: int = CORE_AREA_OVERSAMPLE,
-    separation_step_lod: float | None = CORE_AREA_STEP_LOD,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute core area using a PSF-truncation-ratio aperture.
+    oversample: int = CORE_OVERSAMPLE,
+    separation_step_lod: float | None = CORE_STEP_LOD,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Core throughput and core area with a PSF-truncation-ratio aperture.
 
-    The core area is the solid angle (in (lam/D)**2) of the region where the
-    PSF exceeds ``psf_trunc_ratio * peak``, AYO's ``omega_lod`` definition,
-    measured on ``oversample`` subpixels per pixel side
-    (:func:`truncation_core_area`). It is tabulated every
+    The core is the region where the PSF exceeds ``psf_trunc_ratio * peak``;
+    the throughput is the fraction of the source's light inside it (AYO's
+    ``photap_frac``) and the area its solid angle in (lam/D)**2 (AYO's
+    ``omega_lod``), both measured on ``oversample`` subpixels per pixel side
+    (:func:`truncation_core`). They are tabulated every
     ``separation_step_lod`` on the PSF yippy synthesizes at each separation
-    (:func:`core_area_separations`), so between the package's off-axis
-    offsets the curve is the core area of the PSF an image simulator renders
-    there, not a straight line between the offsets' values.
+    (:func:`core_separations`), so between the package's off-axis offsets
+    the curves describe the PSF an image simulator renders there, not a
+    straight line between the offsets' values.
 
     Args:
         coro: Coronagraph instance.
@@ -635,28 +604,28 @@ def compute_truncation_core_area_curve(
             ``None`` tabulates at the package's own off-axis offsets.
 
     Returns:
-        ``(separations, core_areas)`` - sorted 1-D arrays, area in (lam/D)^2.
+        ``(separations, throughputs, core_areas)`` - 1-D arrays sorted by
+        separation, area in (lam/D)^2.
     """
     pix_lod = float(coro.pixel_scale_arcsec.value)
     half_width = core_window_half_width_pix(pix_lod)
 
-    def areas_of(psfs):
-        return np.asarray(
-            jax.vmap(
-                lambda psf: truncation_core_area(
-                    psf,
-                    psf_trunc_ratio,
-                    pix_lod,
-                    oversample=int(oversample),
-                    half_width_pix=half_width,
-                )
-            )(jnp.asarray(psfs))
-        )
+    def cores_of(psfs):
+        throughputs, areas = jax.vmap(
+            lambda psf: truncation_core(
+                psf,
+                psf_trunc_ratio,
+                pix_lod,
+                oversample=int(oversample),
+                half_width_pix=half_width,
+            )
+        )(jnp.asarray(psfs))
+        return np.column_stack([np.asarray(throughputs), np.asarray(areas)])
 
-    separations, core_areas = [], []
+    separations, cores = [], []
     positions = list(_iter_xaxis_positions(coro))
     if separation_step_lod is not None:
-        grid = core_area_separations(coro, separation_step_lod)
+        grid = core_separations(coro, separation_step_lod)
         y0 = _xaxis_y_offset(coro)
         for start in range(0, len(grid), _PSF_BATCH):
             chunk = grid[start : start + _PSF_BATCH]
@@ -664,14 +633,56 @@ def compute_truncation_core_area_curve(
             padded = jnp.asarray(np.pad(chunk, (0, _PSF_BATCH - len(chunk)), "edge"))
             psfs = coro.offax.create_psfs(padded, jnp.full_like(padded, y0))
             separations.extend(chunk.tolist())
-            core_areas.extend(areas_of(psfs)[: len(chunk)].tolist())
+            cores.append(cores_of(psfs)[: len(chunk)])
         positions = [pos for pos in positions if pos.separation > grid[-1]]
 
     if positions:
         separations.extend(pos.separation for pos in positions)
-        core_areas.extend(areas_of(np.stack([pos.psf for pos in positions])).tolist())
+        cores.append(cores_of(np.stack([pos.psf for pos in positions])))
 
-    return _collect_and_sort(separations, core_areas)
+    cores = np.concatenate(cores)
+    order = np.argsort(separations)
+    return np.asarray(separations)[order], cores[order, 0], cores[order, 1]
+
+
+def compute_truncation_throughput_curve(
+    coro: Coronagraph,
+    psf_trunc_ratio: float = 0.5,
+    oversample: int = CORE_OVERSAMPLE,
+    separation_step_lod: float | None = CORE_STEP_LOD,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Core throughput with a PSF-truncation-ratio aperture.
+
+    The throughput half of :func:`compute_truncation_curves`, which documents
+    the arguments.
+
+    Returns:
+        ``(separations, throughputs)`` - sorted 1-D arrays.
+    """
+    sep, throughput, _ = compute_truncation_curves(
+        coro, psf_trunc_ratio, oversample, separation_step_lod
+    )
+    return sep, throughput
+
+
+def compute_truncation_core_area_curve(
+    coro: Coronagraph,
+    psf_trunc_ratio: float = 0.5,
+    oversample: int = CORE_OVERSAMPLE,
+    separation_step_lod: float | None = CORE_STEP_LOD,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Core area with a PSF-truncation-ratio aperture.
+
+    The area half of :func:`compute_truncation_curves`, which documents the
+    arguments.
+
+    Returns:
+        ``(separations, core_areas)`` - sorted 1-D arrays, area in (lam/D)^2.
+    """
+    sep, _, area = compute_truncation_curves(
+        coro, psf_trunc_ratio, oversample, separation_step_lod
+    )
+    return sep, area
 
 
 def compute_occ_trans_curve(
@@ -843,11 +854,11 @@ def compute_core_mean_intensity_curve(
 
 
 def _build_perf_interps(
-    coro, sep, throughput, raw_contrast, sep_ca, core_area, interp_order
+    coro, sep_t, throughput, sep, raw_contrast, sep_ca, core_area, interp_order
 ):
     """Assign throughput, contrast, and core area spline interpolators to *coro*."""
     coro.interp_order = interp_order
-    coro.throughput_interp = make_interp_spline(sep, throughput, k=interp_order)
+    coro.throughput_interp = make_interp_spline(sep_t, throughput, k=interp_order)
 
     log_contrast = np.log10(np.abs(raw_contrast) + 1e-20)
     coro._log_contrast_interp = make_interp_spline(sep, log_contrast, k=interp_order)
@@ -893,12 +904,18 @@ def compute_all_performance_curves(
     for different ones. The stored contrast is always unfloored; the floor is
     applied after loading.
 
-    ``oversample`` sets the throughput and contrast apertures. The truncation
-    core area is always measured on :data:`CORE_AREA_OVERSAMPLE` subpixels
-    per pixel side, because a core area counted in coarser cells moves by
-    whole cells as the source moves within a pixel.
+    ``oversample`` sets the circular throughput and contrast apertures. With
+    a truncation ratio the core throughput and core area are measured on
+    :data:`CORE_OVERSAMPLE` subpixels per pixel side, because a core counted
+    in coarser cells moves by whole cells as the source moves within a pixel,
+    and they are tabulated every :data:`CORE_STEP_LOD` on synthesized PSFs
+    on every construction (:func:`compute_truncation_curves`). The table's
+    throughput column then holds the same estimator at the package's own
+    offsets and is not what the throughput interpolator reads.
 
-    Returns a dict of all curve data for convenience.
+    Returns a dict of all curve data for convenience. ``throughput`` is the
+    curve the interpolator was built from, on ``separations_throughput``;
+    ``raw_contrast`` is on ``separations``.
     """
     if stellar_diam is None:
         stellar_diam = coro.stellar_intens.diams[0]
@@ -929,7 +946,7 @@ def compute_all_performance_curves(
                 f"Computing throughput curve (PSF trunc ratio = {psf_trunc_ratio})..."
             )
             sep, throughput = compute_truncation_throughput_curve(
-                coro, psf_trunc_ratio=psf_trunc_ratio, oversample=oversample
+                coro, psf_trunc_ratio=psf_trunc_ratio, separation_step_lod=None
             )
         else:
             logger.info("Computing throughput curve...")
@@ -970,15 +987,17 @@ def compute_all_performance_curves(
         logger.info(f"Applied contrast floor of {coro.contrast_floor:.1e}")
 
     # ------------------------------------------------------------------
-    # Core area
+    # Core area (and, with a truncation ratio, core throughput)
     # ------------------------------------------------------------------
+    sep_t, throughput_t = sep, throughput
     if psf_trunc_ratio is not None:
         logger.info(
-            f"Computing core area curve (PSF trunc ratio = {psf_trunc_ratio})..."
+            f"Computing core throughput and area (trunc ratio = {psf_trunc_ratio})..."
         )
-        sep_ca, core_area = compute_truncation_core_area_curve(
+        sep_t, throughput_t, core_area = compute_truncation_curves(
             coro, psf_trunc_ratio=psf_trunc_ratio
         )
+        sep_ca = sep_t
     else:
         logger.info("Computing core area curve...")
         sep_ca, core_area = compute_core_area_curve(
@@ -990,7 +1009,14 @@ def compute_all_performance_curves(
         )
 
     _build_perf_interps(
-        coro, sep, throughput, raw_contrast, sep_ca, core_area, interp_order
+        coro,
+        sep_t,
+        throughput_t,
+        sep,
+        raw_contrast,
+        sep_ca,
+        core_area,
+        interp_order,
     )
 
     # ------------------------------------------------------------------
@@ -1024,15 +1050,15 @@ def compute_all_performance_curves(
     # ------------------------------------------------------------------
     # IWA / OWA
     # ------------------------------------------------------------------
-    _compute_iwa_owa(coro, sep, throughput)
+    _compute_iwa_owa(coro, sep_t, throughput_t)
 
     # ------------------------------------------------------------------
     # Optional plots
     # ------------------------------------------------------------------
     if plot:
         plot_performance_curve(
-            sep,
-            throughput,
+            sep_t,
+            throughput_t,
             title=f"{coro.name} Throughput",
             xlabel="Separation [lam/D]",
             ylabel="Throughput",
@@ -1059,7 +1085,8 @@ def compute_all_performance_curves(
 
     return {
         "separations": sep,
-        "throughput": throughput,
+        "separations_throughput": sep_t,
+        "throughput": throughput_t,
         "raw_contrast": raw_contrast,
         "separations_occ_trans": sep_occ_trans,
         "occ_trans": occ_trans,
