@@ -165,8 +165,11 @@ class Coronagraph:
                 convert from inscribed to circumscribed units. Default False.
             psf_trunc_ratio (float | None):
                 PSF truncation ratio for throughput and core area computation.
-                When set, pixels above ``ratio * peak`` define the aperture
-                (matching AYO's ``photap_frac`` / ``omega_lod``).
+                When set, pixels above ``ratio * peak`` define the aperture,
+                the definition behind AYO's ``photap_frac`` / ``omega_lod``.
+                AYO measures it on the tabulated PSFs with 5x bilinear
+                resampling, which gives a core a few percent larger than
+                the converged one computed here.
                 When None, a fixed circular aperture is used instead.
                 Typical AYO value is 0.3. Default is None.
             interp_order (int):
