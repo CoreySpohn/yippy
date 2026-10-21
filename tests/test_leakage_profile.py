@@ -195,3 +195,19 @@ def test_eqx_separation_arrays_keep_shape(ring_coro, diameter, shape):
         result = evaluate(separations, diameter)
         assert result.shape == shape
         np.testing.assert_allclose(result, expected, rtol=1e-6)
+
+
+@pytest.mark.parametrize("diameter", [-0.01, 0.3, np.nan])
+def test_public_diameter_bounds_under_jit(ring_coro, diameter):
+    """The host loader and traced array view both reject invalid diameters."""
+    import jax
+    import jax.numpy as jnp
+
+    from yippy import EqxCoronagraph
+
+    coro = EqxCoronagraph(yippy_coro=ring_coro)
+    # The scipy loader is host-only; its inputs must be static inside JIT.
+    host = jax.jit(lambda: jnp.asarray(ring_coro.core_mean_intensity(2.5, diameter)))()
+    traced = jax.jit(lambda d: coro.core_mean_intensity(2.5, d))(diameter)
+    assert np.isnan(host)
+    assert np.isnan(traced)

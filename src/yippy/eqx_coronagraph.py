@@ -375,11 +375,15 @@ class EqxCoronagraph(eqx.Module):
         # range, where the stellar map interpolant is defined.
         low, high = self._diam_knot_range
         clamped = jnp.clip(stellar_diam_lod, low, high)
-        return jax.lax.cond(
+        result = jax.lax.cond(
             stellar_diam_lod == 0.0,
             lambda: jnp.asarray(point_source),
             lambda: self._core_mean_intensity_at(separation_lod, clamped),
         )
+        valid = (stellar_diam_lod == 0.0) | (
+            (stellar_diam_lod >= low) & (stellar_diam_lod <= high)
+        )
+        return jnp.where(valid, result, jnp.nan)
 
     def _core_mean_intensity_at(self, separation_lod, stellar_diam_lod) -> Array:
         """Azimuthal mean of the interpolated stellar map at one diameter."""
