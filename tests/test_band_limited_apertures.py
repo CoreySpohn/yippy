@@ -382,6 +382,30 @@ def test_global_truncation_is_independent_of_window(nominal):
     np.testing.assert_allclose(values, np.broadcast_to(reference, (3, 2)), rtol=1e-10)
 
 
+@pytest.mark.parametrize("pixel_lod", [0.25, 0.5])
+def test_fixed_center_airy_photometry(pixel_lod):
+    """A known centroid measures Airy energy without seeking another peak."""
+    psf = airy_psf(pixel_lod, shift_pix=0.3)
+    with jax.enable_x64():
+        flux, area, _ = circular_aperture(
+            psf, 0.7 / pixel_lod, pixel_lod, fixed_center=(128.0, 128.3)
+        )
+    assert float(flux) == pytest.approx(encircled_energy(0.7), rel=1e-3)
+    assert float(area) == pytest.approx(np.pi * 0.7**2, rel=1e-6)
+
+
+def test_fixed_center_ignores_a_brighter_remote_source():
+    """Known-centroid photometry also works on arbitrary, non-PSF images."""
+    y, x = np.indices((32, 32))
+    image = 2 + np.exp(-((y - 24) ** 2 + (x - 24) ** 2) / 4) * 1e3
+    with jax.enable_x64():
+        flux, area, _ = circular_aperture(
+            image, 2.0, 1.0, half_width_pix=3, fixed_center=(8.2, 7.8)
+        )
+    assert float(flux) == pytest.approx(2 * np.pi * 4, rel=1e-5)
+    assert float(area) == pytest.approx(np.pi * 4, rel=1e-10)
+
+
 @pytest.mark.parametrize("value,ratio", [(0.0, 0.5), (2.0, 1.0), (2.0, 1.1)])
 @pytest.mark.parametrize("nominal", [None, (16.0, 40.0)])
 @pytest.mark.parametrize("dtype", [float, int])

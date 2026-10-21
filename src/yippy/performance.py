@@ -50,7 +50,7 @@ CORE_OVERSAMPLE = 10
 
 
 @dataclass
-class OffAxisPosition:
+class _OffAxisPosition:
     """Data for a single off-axis PSF position along the performance axis."""
 
     separation: float  # |x| in lam/D
@@ -65,7 +65,7 @@ class OffAxisPosition:
 
 
 def _iter_xaxis_positions(coro: Coronagraph):
-    """Yield :class:`OffAxisPosition` for each valid x-offset (y ~= 0).
+    """Yield :class:`_OffAxisPosition` for each valid x-offset (y ~= 0).
 
     Iterates over each valid x-offset position along the performance-curve
     axis. All native YIP offsets are included, even those where the nominal
@@ -93,7 +93,7 @@ def _iter_xaxis_positions(coro: Coronagraph):
         py = convert_to_pix(
             y_lod_val, coro.offax.center_y, coro.pixel_scale_arcsec
         ).value
-        yield OffAxisPosition(separation=r, psf=planet_psf, px=px, py=py)
+        yield _OffAxisPosition(separation=r, psf=planet_psf, px=px, py=py)
 
 
 def _collect_and_sort(separations: list, values: list) -> tuple[np.ndarray, np.ndarray]:
@@ -104,7 +104,7 @@ def _collect_and_sort(separations: list, values: list) -> tuple[np.ndarray, np.n
     return sep[order], val[order]
 
 
-def _point_source_in_image(pos: OffAxisPosition) -> bool:
+def _point_source_in_image(pos: _OffAxisPosition) -> bool:
     """Return True if the nominal point-source pixel lies inside the PSF image."""
     ny, nx = pos.psf.shape
     return 0 <= pos.px < nx and 0 <= pos.py < ny
@@ -142,7 +142,7 @@ def _oversample_psf(
     return np.maximum(psf_os, 0.0)
 
 
-def resolve_oversample(coro: Coronagraph, oversample: int | None) -> int:
+def _resolve_oversample(coro: Coronagraph, oversample: int | None) -> int:
     """Return the effective oversampling factor for a calculation.
 
     ``None`` selects AYO's rule, ``ceil(pixscale / 0.05)`` for the realized
@@ -528,10 +528,16 @@ def core_subpixel_window(
         column of the window's first pixel in ``psf``. With
         ``return_gradient=True``, append ``grad_y, grad_x``.
     """
+    center = _peak_index(psf, nominal_center, search_radius_pix)
+    return _subpixel_window_at(psf, center, oversample, half_width_pix, return_gradient)
+
+
+def _subpixel_window_at(psf, center, oversample, half_width_pix, return_gradient=False):
+    """Evaluate a window about a supplied center without searching for a peak."""
     ny, nx = psf.shape
     n_y = min(2 * half_width_pix + 1, ny)
     n_x = min(2 * half_width_pix + 1, nx)
-    row, col = _peak_index(psf, nominal_center, search_radius_pix)
+    row, col = jnp.rint(jnp.asarray(center)).astype(int)
 
     start_y = jnp.clip(row - half_width_pix, 0, ny - n_y)
     start_x = jnp.clip(col - half_width_pix, 0, nx - n_x)
@@ -754,6 +760,7 @@ def circular_aperture(
     half_width_pix: int = 12,
     star_psf=None,
     nominal_center=None,
+    fixed_center=None,
 ):
     """Flux and exact area of a circle on the PSF's trigonometric interpolant.
 
@@ -763,7 +770,9 @@ def circular_aperture(
     angle. The circle is centered on the refined interpolated peak. An optional
     ``nominal_center=(row, column)`` restricts the peak search to a disk of
     radius :data:`PEAK_SEARCH_RADIUS_LOD` in lambda/D about the source.
-    No flux renormalization or intensity clipping is applied.
+    Set ``fixed_center=(row, column)`` for photometry at a known centroid
+    on any image, without peak search. It takes precedence over
+    ``nominal_center``. No flux renormalization or clipping is applied.
 
     The window must contain the circle plus a margin for locating the peak;
     it is clipped to the image as in :func:`core_subpixel_window`. When
@@ -779,13 +788,21 @@ def circular_aperture(
         ``(planet_flux, area, star_flux)``; ``star_flux`` is zero when omitted.
     """
     search_radius = PEAK_SEARCH_RADIUS_LOD / pixel_scale_lod
-    fine, start_y, start_x = core_subpixel_window(
-        psf, oversample, half_width_pix, nominal_center, search_radius
-    )
-    center = _window_peak(
-        fine, start_y, start_x, oversample, nominal_center, search_radius, psf.shape
-    )
-    refined, _ = _refine_peak(psf, center, oversample, nominal_center, search_radius)
+    if fixed_center is None:
+        fine, start_y, start_x = core_subpixel_window(
+            psf, oversample, half_width_pix, nominal_center, search_radius
+        )
+        center = _window_peak(
+            fine, start_y, start_x, oversample, nominal_center, search_radius, psf.shape
+        )
+        refined, _ = _refine_peak(
+            psf, center, oversample, nominal_center, search_radius
+        )
+    else:
+        refined = jnp.asarray(fixed_center)
+        fine, start_y, start_x = _subpixel_window_at(
+            psf, refined, oversample, half_width_pix
+        )
     rows = (
         start_y
         + (jnp.arange(fine.shape[0])[:, None] + 0.5) / oversample
@@ -1452,7 +1469,7 @@ def compute_all_performance_curves(
     """
     if stellar_diam is None:
         stellar_diam = coro.stellar_intens.diams[0]
-    oversample = resolve_oversample(coro, oversample)
+    oversample = _resolve_oversample(coro, oversample)
     truncation = psf_trunc_ratio is not None
 
     # Resolve the directory for save/load operations
