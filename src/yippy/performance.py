@@ -815,6 +815,82 @@ def circular_aperture(
     return flux, area, star_flux
 
 
+def _level_set_weights(fine, grad_y, grad_x, threshold, oversample):
+    """Fraction of each subpixel above the tangent-plane threshold."""
+    # Exact area under the local tangent line in a square. The sum of two
+    # independent uniforms has a trapezoidal CDF; this also handles an
+    # axis-aligned normal without dividing by its vanishing component.
+    a = jnp.maximum(jnp.abs(grad_y), jnp.abs(grad_x)) / oversample
+    b = jnp.minimum(jnp.abs(grad_y), jnp.abs(grad_x)) / oversample
+    z = jnp.abs(fine - threshold)
+    safe_a = jnp.where(a > 0, a, 1.0)
+    safe_b = jnp.where(b > 0, b, 1.0)
+    tail = jnp.where(
+        z <= (a - b) / 2,
+        0.5 - z / safe_a,
+        jnp.maximum((a + b) / 2 - z, 0) ** 2 / (2 * safe_a * safe_b),
+    )
+    core = jnp.where(fine >= threshold, 1 - tail, tail)
+    return jnp.where(a > 0, core, (fine > threshold).astype(fine.dtype))
+
+
+def _global_truncation(psf, threshold, pixel_scale_lod, oversample):
+    """Integrate the whole interpolant in strips with bounded working memory."""
+    ny, nx = psf.shape
+    spectrum = jnp.fft.fft2(psf)
+    fx = jnp.fft.fftfreq(nx)
+    # Zero-pad Fourier modes onto the same subpixel centers as the matrix
+    # DFT window. Keep the signed Nyquist mode, then take the real part only
+    # after both axes have been evaluated, as in core_subpixel_window.
+    modes = jnp.mod(jnp.rint(fx * nx).astype(int), nx * oversample)
+    phase = jnp.exp(2j * jnp.pi * fx * (0.5 / oversample - 0.5))
+    padded = jnp.zeros((ny, nx * oversample), dtype=spectrum.dtype)
+    along_x = (
+        jnp.fft.ifft(padded.at[:, modes].set(spectrum * phase), axis=1) * oversample
+    )
+    dx = (
+        jnp.fft.ifft(
+            padded.at[:, modes].set(spectrum * phase * (2j * jnp.pi * fx)), axis=1
+        )
+        * oversample
+    )
+    strip_height = min(4, ny)
+
+    def integrate(index, state):
+        total, highest, count = state
+        start = index * strip_height
+        basis = _band_limited_samples(spectrum, start, strip_height, oversample)
+        fine = jnp.real(basis @ along_x)
+        gy = jnp.real((basis * (2j * jnp.pi * jnp.fft.fftfreq(ny))) @ along_x)
+        gx = jnp.real(basis @ dx)
+        weights = _level_set_weights(fine, gy, gx, threshold, oversample)
+        inside = start + jnp.arange(strip_height * oversample) / oversample < ny
+        weights = jnp.where(inside[:, None], weights, 0.0)
+        maximum = jnp.max(jnp.where(inside[:, None], fine, -jnp.inf))
+        ties = jnp.sum((fine == maximum) & inside[:, None], dtype=jnp.int32)
+        count = jnp.where(
+            maximum > highest, ties, jnp.where(maximum == highest, count + ties, count)
+        )
+        return (
+            total + jnp.array([jnp.sum(weights * fine), jnp.sum(weights)]),
+            jnp.maximum(highest, maximum),
+            count,
+        )
+
+    sums, highest, count = jax.lax.fori_loop(
+        0,
+        (ny + strip_height - 1) // strip_height,
+        integrate,
+        (
+            jnp.zeros(2, dtype=along_x.real.dtype),
+            jnp.array(-jnp.inf, dtype=along_x.real.dtype),
+            jnp.array(0, dtype=jnp.int32),
+        ),
+    )
+    sums = jnp.where(highest > threshold, sums, jnp.array([highest * count, count]))
+    return sums[0] / oversample**2, sums[1] * (pixel_scale_lod / oversample) ** 2
+
+
 @functools.partial(jax.jit, static_argnames=("oversample", "half_width_pix"))
 def truncation_core(
     psf,
@@ -834,14 +910,15 @@ def truncation_core(
 
     The threshold is ``psf_trunc_ratio`` times the refined interpolated peak.
     If no subpixel exceeds it, the original ``fine == fine.max()`` safeguard
-    selects all tied peak samples, including the whole window for a zero PSF.
+    selects all tied peak samples across the measurement domain: the local
+    window for an in-image source, otherwise the whole image.
 
     With an in-image ``nominal_center``, the peak search stays within
     :data:`PEAK_SEARCH_RADIUS_LOD` of that position and only the local core
     window contributes. This excludes unrelated leakage elsewhere inside the
     IWA. Without a nominal position, or for a native offset outside the image,
-    retain the global peak and add above-threshold original pixels outside
-    the window, preserving the in-image-power convention for these offsets.
+    retain the global peak and integrate the whole image in strips with the
+    same interpolant and fractional weights, preserving in-image power.
 
     An intensity PSF sampled at 0.5 lambda/D per pixel or finer supports
     band-limited reconstruction. The default ten subpixels per side resolve
@@ -864,7 +941,6 @@ def truncation_core(
         ``(throughput, area)``: the core throughput in the PSF's flux units
         and the core area in (lambda/D)^2.
     """
-    ny, nx = psf.shape
     search_radius = PEAK_SEARCH_RADIUS_LOD / pixel_scale_lod
     fine, start_y, start_x, grad_y, grad_x = core_subpixel_window(
         psf,
@@ -874,55 +950,29 @@ def truncation_core(
         search_radius,
         return_gradient=True,
     )
-    n_y, n_x = fine.shape[0] // oversample, fine.shape[1] // oversample
     center = _window_peak(
         fine, start_y, start_x, oversample, nominal_center, search_radius, psf.shape
     )
     _, peak = _refine_peak(psf, center, oversample, nominal_center, search_radius)
     threshold = psf_trunc_ratio * peak
-    # Exact area under the local tangent line in a square. The sum of two
-    # independent uniforms has a trapezoidal CDF; this also handles an
-    # axis-aligned normal without dividing by its vanishing component.
-    a = jnp.maximum(jnp.abs(grad_y), jnp.abs(grad_x)) / oversample
-    b = jnp.minimum(jnp.abs(grad_y), jnp.abs(grad_x)) / oversample
-    z = jnp.abs(fine - threshold)
-    safe_a = jnp.where(a > 0, a, 1.0)
-    safe_b = jnp.where(b > 0, b, 1.0)
-    tail = jnp.where(
-        z <= (a - b) / 2,
-        0.5 - z / safe_a,
-        jnp.maximum((a + b) / 2 - z, 0) ** 2 / (2 * safe_a * safe_b),
-    )
-    core = jnp.where(fine >= threshold, 1 - tail, tail)
-    core = jnp.where(a > 0, core, (fine > threshold).astype(fine.dtype))
+    core = _level_set_weights(fine, grad_y, grad_x, threshold, oversample)
     core = jnp.where(
         jnp.any(fine > threshold), core, (fine == jnp.max(fine)).astype(fine.dtype)
     )
-    rows = jnp.arange(ny)[:, None]
-    cols = jnp.arange(nx)[None, :]
-    in_window = (
-        (rows >= start_y)
-        & (rows < start_y + n_y)
-        & (cols >= start_x)
-        & (cols < start_x + n_x)
+    local = (
+        jnp.sum(core * fine) / oversample**2,
+        jnp.sum(core) * (pixel_scale_lod / oversample) ** 2,
     )
-    outside = (psf > psf_trunc_ratio * peak) & ~in_window
-    if nominal_center is not None:
-        in_image = (
-            (nominal_center[0] >= 0)
-            & (nominal_center[0] < ny)
-            & (nominal_center[1] >= 0)
-            & (nominal_center[1] < nx)
-        )
-        outside = outside & ~in_image
-    throughput = jnp.sum(core * fine) / oversample**2 + jnp.sum(
-        jnp.where(outside, psf, 0.0)
+    in_image = (
+        False
+        if nominal_center is None
+        else _nominal_in_image(nominal_center, psf.shape)
     )
-    area = (
-        jnp.sum(core) * (pixel_scale_lod / oversample) ** 2
-        + jnp.sum(outside) * pixel_scale_lod**2
+    return jax.lax.cond(
+        in_image,
+        lambda: local,
+        lambda: _global_truncation(psf, threshold, pixel_scale_lod, oversample),
     )
-    return throughput, area
 
 
 CORE_STEP_LOD = 0.25
@@ -1016,16 +1066,17 @@ def compute_truncation_curves(
     oversample = CORE_OVERSAMPLE if oversample is None else int(oversample)
 
     def cores_of(psfs, centers):
-        throughputs, areas = jax.vmap(
-            lambda psf, center: truncation_core(
-                psf,
+        throughputs, areas = jax.lax.map(
+            lambda pair: truncation_core(
+                pair[0],
                 psf_trunc_ratio,
                 pix_lod,
                 oversample=oversample,
                 half_width_pix=half_width,
-                nominal_center=center,
-            )
-        )(jnp.asarray(psfs, dtype=jnp.float64), jnp.asarray(centers))
+                nominal_center=pair[1],
+            ),
+            (jnp.asarray(psfs, dtype=jnp.float64), jnp.asarray(centers)),
+        )
         return np.column_stack([np.asarray(throughputs), np.asarray(areas)])
 
     separations, cores = [], []

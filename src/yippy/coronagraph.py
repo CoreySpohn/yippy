@@ -649,7 +649,7 @@ class Coronagraph:
                 "aperture_radius_lod": aperture_radius_lod,
                 "psf_trunc_ratio": psf_trunc_ratio,
                 "oversample": oversample,
-                "circle_method": "band_limited_float64_fractional_squares",
+                "circle_method": "band_limited_fractional_image_domain_peak",
                 "peak_search_radius_lod": PEAK_SEARCH_RADIUS_LOD,
                 "circle_oversample": oversample,
                 "stellar_diam_lod": getattr(stellar_diam, "value", stellar_diam),
@@ -658,7 +658,7 @@ class Coronagraph:
         if psf_trunc_ratio is not None:
             identity.update(
                 {
-                    "core_method": "spectral_tangent_fraction_local_window",
+                    "core_method": "spectral_tangent_fraction_global_strips",
                     "core_oversample": CORE_OVERSAMPLE,
                     "core_step_lod": separation_step_lod,
                     "core_window_lod": CORE_WINDOW_LOD,

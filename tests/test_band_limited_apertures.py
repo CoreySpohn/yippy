@@ -22,7 +22,6 @@ from scipy.special import j0, j1, jvp
 
 from yippy.performance import (
     _iter_xaxis_positions,
-    _point_source_in_image,
     circular_aperture,
     compute_core_area_curve,
     compute_raw_contrast_curve,
@@ -175,8 +174,6 @@ def test_shipped_ten_against_forty_subpixels(shipped_coro, aperture, metric):
     coro = shipped_coro
     pixel_lod = float(coro.pixel_scale_arcsec.value)
     for pos in _iter_xaxis_positions(coro):
-        if not _point_source_in_image(pos):
-            continue
         values = []
         for factor in (10, 40):
             with jax.enable_x64():
@@ -359,3 +356,45 @@ def test_fractional_edge_search_excludes_competing_lobe(column):
     with jax.enable_x64():
         flux, _, _ = circular_aperture(psf, 2.8, 0.25, nominal_center=(16.0, column))
     assert float(flux) < 0.02
+
+
+@pytest.mark.parametrize("nominal", [None, (16.0, 40.0)])
+def test_global_truncation_is_independent_of_window(nominal):
+    """Retained off-image cores integrate every tile with fractional weights."""
+    y, x = np.indices((32, 32))
+    psf = (
+        2 + np.cos(2 * np.pi * (y - 16) / 32) + 0.7 * np.cos(2 * np.pi * (x - 16) / 32)
+    )
+    with jax.enable_x64():
+        values = [
+            np.array(
+                truncation_core(
+                    psf, 0.65, 0.25, half_width_pix=h, nominal_center=nominal
+                )
+            )
+            for h in (3, 8, 16)
+        ]
+        reference = np.array(
+            truncation_core(
+                psf, 0.65, 0.25, half_width_pix=16, nominal_center=(16.0, 16.0)
+            )
+        )
+    np.testing.assert_allclose(values, np.broadcast_to(reference, (3, 2)), rtol=1e-10)
+
+
+@pytest.mark.parametrize("value,ratio", [(0.0, 0.5), (2.0, 1.0), (2.0, 1.1)])
+@pytest.mark.parametrize("nominal", [None, (16.0, 40.0)])
+@pytest.mark.parametrize("dtype", [float, int])
+def test_global_peak_only_safeguard_covers_the_image(value, ratio, nominal, dtype):
+    """Degenerate global cores retain tied maxima across all integration tiles."""
+    with jax.enable_x64():
+        for half in (3, 8):
+            flux, area = truncation_core(
+                np.full((32, 32), value, dtype=dtype),
+                ratio,
+                0.25,
+                half_width_pix=half,
+                nominal_center=nominal,
+            )
+            assert float(area) == pytest.approx(32**2 * 0.25**2)
+            assert float(flux) == pytest.approx(32**2 * value)
