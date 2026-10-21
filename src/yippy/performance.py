@@ -1178,7 +1178,8 @@ def profile_radii(shape: tuple[int, int], center: tuple[float, float]) -> np.nda
 def azimuthal_mean_profile(image, center, radii_pix, n_theta=None):
     """Azimuthal mean of an image on circles about ``center``.
 
-    Each circle is sampled at ``n_theta`` equally spaced position angles with
+    Each circle is sampled at ``n_theta`` equally spaced positions along its
+    in-image angular arcs with
     Keys cubic interpolation (:func:`hwoutils.map_coordinates.map_coordinates`)
     and the samples that fall inside the image are averaged. This is the mean
     intensity at exactly that radius. Averaging the pixels whose centers fall
@@ -1198,19 +1199,65 @@ def azimuthal_mean_profile(image, center, radii_pix, n_theta=None):
         1-D JAX array, the mean of each circle's in-image samples (0 for a
         circle with none).
     """
-    image = jnp.asarray(image)
+    image = jnp.asarray(image, dtype=jnp.result_type(image, 1.0))
     ny, nx = image.shape
     if n_theta is None:
         n_theta = 2 * max(ny, nx)
-    theta = jnp.arange(n_theta) * (2.0 * jnp.pi / n_theta)
     radii = jnp.asarray(radii_pix, dtype=image.dtype)[:, None]
-    rows = center[0] + radii * jnp.sin(theta)[None, :]
-    cols = center[1] + radii * jnp.cos(theta)[None, :]
-    inside = (rows >= 0) & (rows <= ny - 1) & (cols >= 0) & (cols <= nx - 1)
-    values = map_coordinates(image, [rows, cols], order=3, mode="nearest")
+    safe_radii = jnp.where(radii > 0, radii, 1.0)
+    # Circle/edge intersections split the circumference into wholly inside
+    # or outside arcs. Sampling arc length cannot miss a short corner arc.
+    y_edges = (jnp.array([0, ny - 1]) - center[0]) / safe_radii
+    x_edges = (jnp.array([0, nx - 1]) - center[1]) / safe_radii
+    y_angles = jnp.arcsin(jnp.clip(y_edges, -1, 1))
+    x_angles = jnp.arccos(jnp.clip(x_edges, -1, 1))
+    crossings = jnp.mod(
+        jnp.concatenate([y_angles, jnp.pi - y_angles, x_angles, -x_angles], axis=1),
+        2 * jnp.pi,
+    )
+    ends = jnp.broadcast_to(jnp.array([0.0, 2 * jnp.pi]), (radii.shape[0], 2))
+    edges = jnp.sort(jnp.concatenate([ends, crossings], axis=1), axis=1)
+
+    def coordinates(theta):
+        return center[0] + radii * jnp.sin(theta), center[1] + radii * jnp.cos(theta)
+
+    def in_image(rows, cols, tolerance=0.0):
+        return (
+            (rows >= -tolerance)
+            & (rows <= ny - 1 + tolerance)
+            & (cols >= -tolerance)
+            & (cols <= nx - 1 + tolerance)
+        )
+
+    mid = (edges[:, :-1] + edges[:, 1:]) / 2
+    lengths = jnp.where(in_image(*coordinates(mid)), jnp.diff(edges, axis=1), 0.0)
+    cumulative = jnp.concatenate(
+        [jnp.zeros_like(radii), jnp.cumsum(lengths, axis=1)], axis=1
+    )
+    total_length = cumulative[:, -1:]
+    positions = total_length * ((jnp.arange(n_theta) + 0.5) / n_theta)
+    index = (
+        jax.vmap(lambda c, t: jnp.searchsorted(c, t, side="right"))(
+            cumulative, positions
+        )
+        - 1
+    )
+    index = jnp.clip(index, 0, lengths.shape[1] - 1)
+    theta = (
+        jnp.take_along_axis(edges, index, axis=1)
+        + positions
+        - jnp.take_along_axis(cumulative, index, axis=1)
+    )
+    values = map_coordinates(image, coordinates(theta), order=3, mode="nearest")
+    # A tangent circle has zero arc length but can touch one or more corners.
+    rows, cols = coordinates(edges)
+    inside = in_image(rows, cols, 8 * jnp.finfo(image.dtype).eps * max(ny, nx))
+    endpoints = map_coordinates(image, [rows, cols], order=3, mode="nearest")
     count = jnp.sum(inside, axis=1)
-    total = jnp.sum(jnp.where(inside, values, 0.0), axis=1)
-    return jnp.where(count > 0, total / jnp.maximum(count, 1), 0.0)
+    tangent_mean = jnp.sum(jnp.where(inside, endpoints, 0.0), axis=1) / jnp.maximum(
+        count, 1
+    )
+    return jnp.where(total_length[:, 0] > 0, jnp.mean(values, axis=1), tangent_mean)
 
 
 def core_mean_intensity_profile(coro: Coronagraph, stellar_diam) -> np.ndarray:

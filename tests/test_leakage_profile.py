@@ -211,3 +211,28 @@ def test_public_diameter_bounds_under_jit(ring_coro, diameter):
     traced = jax.jit(lambda d: coro.core_mean_intensity(2.5, d))(diameter)
     assert np.isnan(host)
     assert np.isnan(traced)
+
+
+@pytest.mark.parametrize(
+    "shape,center", [((65, 65), (32, 32)), ((65, 61), (29.3, 34.7))]
+)
+@pytest.mark.parametrize("dtype", [float, int])
+def test_corner_arcs_of_constant_maps(shape, center, dtype):
+    """Every intersecting circle has mean one, even near a far corner."""
+    import jax
+    import jax.numpy as jnp
+
+    from yippy.performance import azimuthal_mean_profile
+
+    corner = max(
+        np.hypot(y - center[0], x - center[1])
+        for y in (0, shape[0] - 1)
+        for x in (0, shape[1] - 1)
+    )
+    radii = np.r_[44.75, 45.0, 45.25, corner - 0.001, corner]
+    with jax.enable_x64():
+        evaluate = jax.jit(
+            lambda r: azimuthal_mean_profile(jnp.ones(shape, dtype=dtype), center, r)
+        )
+        np.testing.assert_allclose(evaluate(radii), 1.0, atol=1e-12)
+        np.testing.assert_allclose(evaluate(np.array([corner + 0.01])), 0.0)
