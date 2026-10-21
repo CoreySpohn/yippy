@@ -2,7 +2,10 @@
 
 This page summarizes validation of yippy's coronagraph performance metrics
 against AYO's IDL implementation, tested on two coronagraphs (AAVC and OVC)
-with PSF truncation ratio 0.3.
+with PSF truncation ratio 0.3. These historical results used synthesized-PSF
+core measurements between offsets. That calculation now requires the explicit
+`separation_step_lod=CORE_STEP_LOD` opt-in; default curves measure the shipped
+PSFs at their own offsets and interpolate the resulting values.
 
 ## Key Results
 
@@ -17,7 +20,7 @@ The core-throughput extremes lie within 3 $\lambda/D$ of the image edge
 (30 to 32 $\lambda/D$), where the core is cut off by the image border and
 yippy's curve falls up to 10% below AYO's. Out to 29 $\lambda/D$ the core
 throughput agrees to 2.0% (AAVC) and 1.1% (OVC), with means of 1.0031 and
-1.0036; the largest difference is near the inner working angle, where yippy
+1.0036; the largest difference is near the inner working angle, where the opt-in yippy calculation
 measures the core of the PSF synthesized at each separation and AYO
 interpolates linearly between the tabulated offsets.
 
