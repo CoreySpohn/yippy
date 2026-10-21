@@ -49,7 +49,7 @@ _SAMPLING_CACHE_VERSION = 1
 _CACHE_SCHEMA_VERSION = 2
 
 # Oversampling factor for automatically computed performance tables.
-_DEFAULT_OVERSAMPLE = 2
+_DEFAULT_OVERSAMPLE = CORE_OVERSAMPLE
 
 
 def _load_cached_datacube(path: Path) -> np.ndarray | None:
@@ -636,6 +636,8 @@ class Coronagraph:
                 "aperture_radius_lod": aperture_radius_lod,
                 "psf_trunc_ratio": psf_trunc_ratio,
                 "oversample": oversample,
+                "circle_method": "band_limited_float64_subpixel_centers",
+                "circle_oversample": oversample,
                 "stellar_diam_lod": getattr(stellar_diam, "value", stellar_diam),
             }
         )
@@ -724,7 +726,7 @@ class Coronagraph:
         stellar_diam=None,
         fit_gaussian_for_core_area=False,
         use_phot_aperture_as_min=False,
-        oversample=2,
+        oversample=CORE_OVERSAMPLE,
         save_to_fits=True,
         performance_file="coro_perf.fits",
         load_from_file=None,
@@ -763,7 +765,7 @@ class Coronagraph:
         aperture_radius_lod=0.7,
         fit_gaussian_for_core_area=False,
         use_phot_aperture_as_min=False,
-        oversample=2,
+        oversample=CORE_OVERSAMPLE,
         compute_throughput=True,
         compute_contrast=True,
         compute_core_area=True,
@@ -1162,7 +1164,9 @@ class Coronagraph:
     # Standalone curve methods (for plotting individual curves)
     # ------------------------------------------------------------------
 
-    def throughput_curve(self, aperture_radius_lod=0.7, oversample=1, plot=True):
+    def throughput_curve(
+        self, aperture_radius_lod=0.7, oversample=CORE_OVERSAMPLE, plot=True
+    ):
         """Compute and optionally plot the throughput curve.
 
         Delegates to :func:`yippy.performance.compute_throughput_curve`.
@@ -1184,7 +1188,11 @@ class Coronagraph:
         return sep, vals
 
     def raw_contrast_curve(
-        self, stellar_diam=0 * lod, aperture_radius_lod=0.7, oversample=2, plot=True
+        self,
+        stellar_diam=0 * lod,
+        aperture_radius_lod=0.7,
+        oversample=CORE_OVERSAMPLE,
+        plot=True,
     ):
         """Compute and optionally plot the raw contrast curve.
 
@@ -1212,7 +1220,7 @@ class Coronagraph:
         aperture_radius_lod=0.7,
         fit_gaussian=False,
         use_phot_aperture_as_min=False,
-        oversample=2,
+        oversample=CORE_OVERSAMPLE,
         plot=True,
     ):
         """Compute and optionally plot the core area curve.

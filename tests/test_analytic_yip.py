@@ -7,13 +7,10 @@ cannot support tests like these: its correct answers are not known
 independently of the code that produces them, so a test against one can only
 pin current behavior.
 
-The recurring tolerance is the aperture-discretization bias. Throughput and
-contrast are summed over whole pixels judged inside a circular aperture of
-0.7 lambda/D, which on a 0.25 lambda/D grid is a 2.8-pixel-radius circle
-approximated by pixel membership. That bias is measured by
-``test_the_aperture_bias_is_a_separation_independent_constant`` rather than
-assumed, and the value it measures is what the looser tolerances below are set
-from.
+The remaining aperture bias is subpixel boundary quadrature. The circle has
+radius 28 cells on the 10x grid; a pixel-centered Gaussian peaks halfway
+between adjacent subpixel centers. The tests pin the resulting encircled flux
+and check that this boundary error is independent of source separation.
 """
 
 import numpy as np
@@ -24,8 +21,8 @@ APERTURE_RADIUS_LOD = 0.7
 # Measured by the first test in this file, which fails if it moves. The
 # aperture holds slightly less flux than the true circle, so the bias is
 # negative.
-APERTURE_BIAS = -0.0187
-APERTURE_BIAS_TOL = 0.002
+APERTURE_BIAS = -0.0027661
+APERTURE_BIAS_TOL = 2e-5
 
 
 @pytest.fixture(params=["1d", "2d"])

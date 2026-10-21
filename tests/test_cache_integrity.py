@@ -172,9 +172,8 @@ def test_truncation_cache_distinguishes_contrast_aperture(tmp_path):
 def test_fine_radius_difference_does_not_alias(tmp_path):
     """Radii 0.706 and 0.708 share a two-decimal token but not an aperture.
 
-    At the default oversampling the aperture radius is ``8 r`` oversampled
-    pixels and a pixel lies at distance ``sqrt(32) = 5.657`` from the peak, so
-    that pixel is outside the 0.706 aperture (5.648) and inside 0.708 (5.664).
+    At ten subpixels per pixel, these radii select different boundary cells
+    even though their rounded two-decimal filename tokens would coincide.
     """
     path = _yip(tmp_path, "warm")
     first = Coronagraph(path, aperture_radius_lod=0.706)
@@ -227,7 +226,7 @@ def test_explicit_oversampling_does_not_feed_automatic_cache(tmp_path, monkeypat
 
     obj.compute_all_performance_curves(
         aperture_radius_lod=0.7,
-        oversample=2,
+        oversample=10,
         save_to_fits=True,
         performance_file=obj._perf_filename(),
         cache_dir=obj._perf_dir,
@@ -236,32 +235,26 @@ def test_explicit_oversampling_does_not_feed_automatic_cache(tmp_path, monkeypat
     _assert_same_metrics(Coronagraph(path), cold)
 
 
-def test_default_construction_uses_oversample_two(tmp_path, monkeypatch):
-    """The cold constructor keeps its oversampling factor of 2 in both modes.
-
-    This covers the circular-aperture throughput and the contrast. The
-    truncation core throughput and area are measured on their own subpixel
-    grid.
-    """
-    seen = []
-    for name in (
-        "compute_throughput_curve",
-        "compute_raw_contrast_curve",
-    ):
-        original = getattr(perf, name)
-
-        def spy(*args, _original=original, _name=name, **kwargs):
-            seen.append((_name, kwargs.get("oversample")))
-            return _original(*args, **kwargs)
-
-        _patch_everywhere(monkeypatch, name, spy)
-    path = _yip(tmp_path, "yip")
-    Coronagraph(path)
-    Coronagraph(path, psf_trunc_ratio=0.3)
-    coro = Coronagraph(_yip(tmp_path, "setter"))
-    coro.set_psf_trunc_ratio(0.5)
-    assert seen, "no calculation observed"
-    assert all(factor == 2 for _, factor in seen), seen
+@pytest.mark.parametrize("mode", ["circle", "truncation", "setter"])
+def test_default_construction_measures_the_ten_subpixel_circle(tmp_path, mode):
+    """Constructor and setter contrast use the same counted circular aperture."""
+    package = write_synthetic_yip(tmp_path / "yip")
+    coro = Coronagraph(
+        package.path, psf_trunc_ratio=0.3 if mode == "truncation" else None
+    )
+    if mode == "setter":
+        coro.set_psf_trunc_ratio(0.5)
+    sep = 3.0
+    # Sum of the analytic sigma=2-pixel Gaussian on a closed disk of radius
+    # 28 subpixels, centered on its brightest subpixel (0.05-pixel offset).
+    planet_flux = 0.622960946245892 * package.occulter(sep)
+    area_pixels = 24.53
+    assert coro.raw_contrast(sep) == pytest.approx(
+        package.stellar_level * area_pixels / planet_flux, rel=1e-5
+    )
+    if mode == "circle":
+        assert coro.throughput(sep) == pytest.approx(planet_flux, rel=1e-5)
+        assert coro.core_area(sep) == pytest.approx(area_pixels * package.pixscale**2)
 
 
 # ---------------------------------------------------------------------------
@@ -488,5 +481,30 @@ def test_synthesized_core_cache_does_not_feed_default_curves(tmp_path):
         cache_dir=obj._perf_dir,
     )
     warm = Coronagraph(path, psf_trunc_ratio=0.5)
+    for name, value in _metrics(warm).items():
+        assert_allclose(value, expected[name], rtol=RTOL, err_msg=name)
+
+
+@pytest.mark.parametrize("trunc", [None, 0.3])
+def test_legacy_circle_method_is_not_reused(tmp_path, trunc):
+    """A table labeled with the previous cubic aperture cannot supply new curves."""
+    path = _yip(tmp_path, "warm")
+    obj = Coronagraph(path, psf_trunc_ratio=trunc)
+    expected = _metrics(obj)
+    identity = obj._auto_perf_identity()
+    identity.pop("circle_method")
+    identity.pop("circle_oversample")
+    identity["oversample"] = 2
+    if trunc is not None:
+        identity["core_step_lod"] = perf.CORE_STEP_LOD
+    save_coro_performance_to_fits(
+        np.array([0.0, 3.0, 6.0]),
+        np.full(3, 0.123),
+        np.full(3, 0.456),
+        obj._perf_filename(),
+        obj._perf_dir,
+        identity=identity,
+    )
+    warm = Coronagraph(path, psf_trunc_ratio=trunc)
     for name, value in _metrics(warm).items():
         assert_allclose(value, expected[name], rtol=RTOL, err_msg=name)

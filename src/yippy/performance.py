@@ -31,15 +31,17 @@ from scipy.optimize import root_scalar
 from .logger import logger
 from .util import (
     convert_to_pix,
-    extract_and_oversample_subarray,
     load_core_truncation_from_fits,
     load_coro_performance_from_fits,
-    measure_flux_in_oversampled_aperture,
     save_coro_performance_to_fits,
 )
 
 if TYPE_CHECKING:
     from .coronagraph import Coronagraph
+
+
+CORE_OVERSAMPLE = 10
+"""Subpixels per pixel side used to measure core areas and aperture fluxes."""
 
 
 # ---------------------------------------------------------------------------
@@ -266,12 +268,14 @@ def plot_performance_curve(
 def compute_throughput_curve(
     coro: Coronagraph,
     aperture_radius_lod: float = 0.7,
-    oversample: int = 2,
+    oversample: int = CORE_OVERSAMPLE,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute coronagraph throughput vs separation.
 
-    Throughput is the fraction of the total flux (planet PSF normalised to 1)
+    Throughput is the fraction of the total flux (planet PSF normalized to 1)
     that lands inside a photometric aperture at each off-axis position.
+    The circle is centered on the peak of the band-limited interpolant and
+    summed at subpixel centers (:func:`circular_aperture`).
 
     Args:
         coro: Coronagraph instance.
@@ -289,17 +293,15 @@ def compute_throughput_curve(
             separations.append(pos.separation)
             throughputs.append(0.0)
             continue
-        sub_os, px_os, py_os, r_os, sub_orig = extract_and_oversample_subarray(
-            pos.psf, pos.px, pos.py, radius_pix, oversample
-        )
-        # Center aperture on PSF peak to match AYO's behavior
-        peak_ij = np.unravel_index(sub_os.argmax(), sub_os.shape)
-        py_os, px_os = float(peak_ij[0]), float(peak_ij[1])
-        flux = measure_flux_in_oversampled_aperture(
-            sub_os, px_os, py_os, r_os, sub_orig
+        flux, _, _ = _measure_circular_aperture(
+            pos.psf,
+            radius_pix,
+            coro.pixel_scale_arcsec.value,
+            oversample=oversample,
+            half_width_pix=int(np.ceil(radius_pix)) + 2,
         )
         separations.append(pos.separation)
-        throughputs.append(flux)
+        throughputs.append(float(flux))
 
     return _collect_and_sort(separations, throughputs)
 
@@ -308,12 +310,13 @@ def compute_raw_contrast_curve(
     coro: Coronagraph,
     stellar_diam=0.0 * lod,
     aperture_radius_lod: float = 0.7,
-    oversample: int = 2,
+    oversample: int = CORE_OVERSAMPLE,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute raw contrast curve vs separation.
 
     Contrast is the ratio of stellar flux to planet flux within the same
-    photometric aperture at each off-axis position.
+    circle centered on the planet's band-limited subpixel peak. Both images
+    use the identical subpixel coordinates and mask (:func:`circular_aperture`).
 
     Args:
         coro: Coronagraph instance.
@@ -337,25 +340,17 @@ def compute_raw_contrast_curve(
             separations.append(pos.separation)
             contrasts.append(1e20)
             continue
-        # Planet flux
-        sub_os_p, px_os_p, py_os_p, r_os_p, sub_orig_p = (
-            extract_and_oversample_subarray(
-                pos.psf, pos.px, pos.py, radius_pix, oversample
-            )
-        )
-        planet_flux = measure_flux_in_oversampled_aperture(
-            sub_os_p, px_os_p, py_os_p, r_os_p, sub_orig_p
-        )
-        # Star flux
-        sub_os_s, sx_os, sy_os, r_os_s, sub_orig_s = extract_and_oversample_subarray(
-            star_psf, pos.px, pos.py, radius_pix, oversample
-        )
-        star_flux = measure_flux_in_oversampled_aperture(
-            sub_os_s, sx_os, sy_os, r_os_s, sub_orig_s
+        planet_flux, _, star_flux = _measure_circular_aperture(
+            pos.psf,
+            radius_pix,
+            coro.pixel_scale_arcsec.value,
+            oversample=oversample,
+            half_width_pix=int(np.ceil(radius_pix)) + 2,
+            star_psf=star_psf,
         )
         contrast_val = star_flux / planet_flux if planet_flux > 0 else np.inf
         separations.append(pos.separation)
-        contrasts.append(contrast_val)
+        contrasts.append(float(contrast_val))
 
     return _collect_and_sort(separations, contrasts)
 
@@ -365,13 +360,14 @@ def compute_core_area_curve(
     aperture_radius_lod: float = 0.7,
     fit_gaussian: bool = False,
     use_phot_aperture_as_min: bool = False,
-    oversample: int = 2,
+    oversample: int = CORE_OVERSAMPLE,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute core area vs separation.
 
-    The core area represents the effective area of the PSF core.  If
-    *fit_gaussian* is True a 2-D Gaussian is fitted to each PSF; otherwise a
-    fixed circular aperture is used.
+    If *fit_gaussian* is True a 2-D Gaussian is fitted to each PSF; otherwise
+    the circular area counts subpixel centers inside the aperture on the
+    band-limited grid (:func:`circular_aperture`), clipped to the image.
+    Its continuum limit is ``pi * aperture_radius_lod**2``.
 
     Args:
         coro: Coronagraph instance.
@@ -401,13 +397,21 @@ def compute_core_area_curve(
             core_areas.append(np.pi * aperture_radius_lod**2)
             continue
         if fit_gaussian:
-            sub_os, px_os, py_os, _, _ = extract_and_oversample_subarray(
-                pos.psf,
-                pos.px,
-                pos.py,
-                aperture_radius_lod / coro.pixel_scale_arcsec.value * 3,
-                oversample,
+            radius_pix = aperture_radius_lod / coro.pixel_scale_arcsec.value * 3
+            margin = int(np.ceil(radius_pix * 3))
+            ny, nx = pos.psf.shape
+            xmin, xmax = max(0, pos.px - margin), min(nx - 1, pos.px + margin)
+            ymin, ymax = max(0, pos.py - margin), min(ny - 1, pos.py + margin)
+            subarr = np.asarray(pos.psf[ymin : ymax + 1, xmin : xmax + 1])
+            sub_os = np.asarray(
+                resample_flux(
+                    jnp.asarray(np.asarray(subarr, dtype=np.float64)),
+                    1.0,
+                    1.0 / oversample,
+                    tuple(n * oversample for n in subarr.shape),
+                )
             )
+            px_os, py_os = (pos.px - xmin) * oversample, (pos.py - ymin) * oversample
             y_grid, x_grid = np.indices(sub_os.shape)
             amplitude = sub_os.max()
             sigma_init = 1.0 * oversample
@@ -426,16 +430,21 @@ def compute_core_area_curve(
             if use_phot_aperture_as_min:
                 area = max(area, np.pi * aperture_radius_lod**2)
         else:
-            area = np.pi * aperture_radius_lod**2
+            radius_pix = aperture_radius_lod / coro.pixel_scale_arcsec.value
+            _, area, _ = _measure_circular_aperture(
+                pos.psf,
+                radius_pix,
+                coro.pixel_scale_arcsec.value,
+                oversample=oversample,
+                half_width_pix=int(np.ceil(radius_pix)) + 2,
+            )
+            area = float(area)
 
         separations.append(pos.separation)
         core_areas.append(area)
 
     return _collect_and_sort(separations, core_areas)
 
-
-CORE_OVERSAMPLE = 10
-"""Subpixels per pixel side of the threshold mask that measures the core."""
 
 CORE_WINDOW_LOD = 3.0
 """Half-width, in lambda/D, of the window about the PSF peak holding the core."""
@@ -494,6 +503,79 @@ def core_subpixel_window(
     return fine, start_y, start_x
 
 
+def _measure_circular_aperture(
+    psf, radius_pix, pixel_scale_lod, oversample, half_width_pix, star_psf=None
+):
+    """Host measurement boundary using float64 to resolve faint stellar leakage."""
+    with jax.enable_x64():
+        values = circular_aperture(
+            jnp.asarray(psf, dtype=jnp.float64),
+            radius_pix,
+            pixel_scale_lod,
+            oversample=oversample,
+            half_width_pix=half_width_pix,
+            star_psf=None
+            if star_psf is None
+            else jnp.asarray(star_psf, dtype=jnp.float64),
+        )
+        return tuple(float(value) for value in values)
+
+
+@functools.partial(jax.jit, static_argnames=("oversample", "half_width_pix"))
+def circular_aperture(
+    psf,
+    radius_pix,
+    pixel_scale_lod,
+    oversample: int = CORE_OVERSAMPLE,
+    half_width_pix: int = 12,
+    star_psf=None,
+):
+    """Flux and counted area of a circle on the PSF's trigonometric interpolant.
+
+    The circle is centered on the brightest subpixel of the band-limited
+    window. Subpixel centers at or inside ``radius_pix`` count, with intensity
+    multiplied by ``1 / oversample**2`` for flux and the subpixel solid angle
+    for area. No flux renormalization or clipping of interpolated intensity
+    is applied. A flat image therefore gives exactly the counted circle area.
+
+    The window must contain the circle plus a margin for locating the peak;
+    it is clipped to the image as in :func:`core_subpixel_window`. When
+    ``star_psf`` is supplied, its interpolant is measured at the same global
+    coordinates through the same mask, rather than at the stellar peak.
+    Sampling at 0.5 lambda/D per pixel or finer is required for an unaliased
+    reconstruction; finite-image periodic boundaries can still affect edges.
+    This kernel uses the active JAX precision and supports ``jit`` and
+    ``vmap``. Performance curves evaluate it in float64 to avoid cancellation
+    in faint stellar sums, without changing the global precision setting.
+
+    Returns:
+        ``(planet_flux, area, star_flux)``; ``star_flux`` is zero when omitted.
+    """
+    fine, start_y, start_x = core_subpixel_window(psf, oversample, half_width_pix)
+    row, col = jnp.unravel_index(jnp.argmax(fine), fine.shape)
+    rows = jnp.arange(fine.shape[0])[:, None] - row
+    cols = jnp.arange(fine.shape[1])[None, :] - col
+    radius_squared = (radius_pix * oversample) ** 2
+    # Include boundary centers when floating-point multiplication rounds the
+    # squared radius just below an integer squared distance.
+    radius_squared = jnp.nextafter(radius_squared, jnp.inf)
+    circle = rows**2 + cols**2 <= radius_squared
+    flux = jnp.sum(jnp.where(circle, fine, 0.0)) / oversample**2
+    area = jnp.sum(circle) * (pixel_scale_lod / oversample) ** 2
+    star_flux = 0.0
+    if star_psf is not None:
+        spectrum = jnp.fft.fft2(star_psf)
+        basis_y = _band_limited_samples(
+            spectrum, start_y, fine.shape[0] // oversample, oversample
+        )
+        basis_x = _band_limited_samples(
+            spectrum.T, start_x, fine.shape[1] // oversample, oversample
+        )
+        star_fine = jnp.real(basis_y @ spectrum @ basis_x.T)
+        star_flux = jnp.sum(jnp.where(circle, star_fine, 0.0)) / oversample**2
+    return flux, area, star_flux
+
+
 @functools.partial(jax.jit, static_argnames=("oversample", "half_width_pix"))
 def truncation_core(
     psf,
@@ -518,14 +600,15 @@ def truncation_core(
 
     The subpixel values are the PSF's band-limited (trigonometric)
     interpolant (:func:`core_subpixel_window`). An
-    intensity PSF sampled finer than lambda/(2D) is determined exactly by its
+    intensity PSF sampled at lambda/(2D) or finer is determined by its
     samples, and yippy synthesizes off-axis PSFs between tabulated offsets
     with Fourier shifts of the same kind. A local cubic kernel, by contrast,
     flattens the core and overstates the area by up to about one percent at
     0.25 lambda/D sampling. Counting whole pixels, even twice-oversampled
     ones, puts the area on a coarse lattice that moves by several percent
-    with the source's subpixel position; ten subpixels per side bring the
-    lattice error below about half a percent.
+    with the source's subpixel position. Ten subpixels per side reduce this
+    lattice error, but do not guarantee a fixed relative accuracy; the Airy
+    half-maximum area can still differ from its continuum value by 0.71%.
 
     The shapes are fixed by the static arguments, so the function is
     ``jit``-compiled once and can be ``vmap``-ped over a stack of PSFs.
@@ -567,7 +650,7 @@ def truncation_core(
 
 
 CORE_STEP_LOD = 0.25
-"""Separation spacing, in lambda/D, of the tabulated truncation core curves."""
+"""Opt-in spacing, in lambda/D, for core curves measured on synthesized PSFs."""
 
 _PSF_BATCH = 16
 """Off-axis PSFs synthesized per call when tabulating the core curves."""
@@ -576,10 +659,10 @@ _PSF_BATCH = 16
 def core_separations(coro: Coronagraph, step_lod: float = CORE_STEP_LOD) -> np.ndarray:
     """Separations, in lambda/D, at which the PSF is synthesized for the core curves.
 
-    The core changes shape between the tabulated off-axis offsets, which can
-    be several lambda/D apart, so the core throughput and area are tabulated
-    on a uniform
-    grid of ``step_lod`` from the smallest non-negative x offset to the
+    This grid is used only when a caller opts into synthesized PSFs through
+    ``separation_step_lod``. Default curves use the shipped PSFs at their own
+    offsets. The optional uniform grid steps by ``step_lod`` from the smallest
+    non-negative x offset to the
     largest one whose PSF center still lies in the image
     (``max_offset_in_image``), less one core window (:data:`CORE_WINDOW_LOD`).
     Closer to the edge the core is cut off by the image border and the
@@ -642,9 +725,8 @@ def compute_truncation_curves(
         psf_trunc_ratio: Fraction of PSF peak used as threshold.
         oversample: Subpixels per pixel side at which the band-limited
             interpolant is evaluated (:func:`truncation_core`); ``None``
-            selects :data:`CORE_OVERSAMPLE`. This is not the cubic-resampling
-            factor the circular-aperture curves take: it sets the resolution
-            of the core boundary, so values below 10 quantize the core area.
+            selects :data:`CORE_OVERSAMPLE`. This sets the resolution of the
+            core boundary, as for circular apertures.
         separation_step_lod: Spacing of the separation grid in lambda/D.
             Defaults to ``None`` for the package's own off-axis offsets.
             Pass :data:`CORE_STEP_LOD` to opt into synthesized PSFs.
@@ -925,7 +1007,7 @@ def compute_all_performance_curves(
     stellar_diam=None,
     fit_gaussian_for_core_area: bool = False,
     use_phot_aperture_as_min: bool = False,
-    oversample: int | None = 2,
+    oversample: int | None = CORE_OVERSAMPLE,
     save_to_fits: bool = True,
     performance_file: str = "coro_perf.fits",
     load_from_file: str | None = None,
@@ -957,11 +1039,10 @@ def compute_all_performance_curves(
     different ones. The stored contrast is always unfloored; the floor is
     applied after loading.
 
-    ``oversample`` sets the circular throughput and contrast apertures. With
-    a truncation ratio the core throughput and core area are measured on
-    :data:`CORE_OVERSAMPLE` subpixels per pixel side, because a core counted
-    in coarser cells moves by whole cells as the source moves within a pixel,
-    and stored in the table's core table at the package's own off-axis offsets.
+    Circular fluxes and counted areas use the band-limited interpolant at
+    ``oversample`` subpixels per pixel side (default :data:`CORE_OVERSAMPLE`).
+    Truncation cores use :data:`CORE_OVERSAMPLE` and are stored in the table's
+    core table at the package's own off-axis offsets.
     ``separation_step_lod=CORE_STEP_LOD`` opts into a grid of synthesized PSFs
     (:func:`compute_truncation_curves`); the default is ``None``.
 

@@ -35,7 +35,8 @@ FAR_FIELD_SEPARATIONS_LOD = (20.0, 25.0)
 # reader's half-maximum crossing is visible in review. This is a regression
 # pin, not a derivation: it catches unintended change and establishes nothing
 # about correctness.
-EAC1_AAVC_IWA_LOD = 4.258
+# Measured with the 10x band-limited circle of radius 0.7 lambda/D.
+EAC1_AAVC_IWA_LOD = 4.27092
 EAC1_AAVC_IWA_TOL = 5e-3
 
 

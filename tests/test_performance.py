@@ -1,4 +1,4 @@
-"""Tests for yippy.performance — coronagraph performance curve computation.
+"""Tests for yippy.performance -- coronagraph performance curve computation.
 
 Uses a real coronagraph YIP via the session-scoped ``coro`` fixture from
 conftest.py (downloaded via pooch).
@@ -150,8 +150,8 @@ class TestCoreAreaCurve:
     def test_constant_for_fixed_aperture(self, coro):
         """Without Gaussian fitting, core area should be constant."""
         _sep, core_area = compute_core_area_curve(coro, fit_gaussian=False)
-        expected = np.pi * 0.7**2  # default radius
-        np.testing.assert_allclose(core_area, expected, rtol=1e-10)
+        expected = 2453 * 0.025**2  # closed disk of radius 28 subpixels
+        np.testing.assert_allclose(core_area, expected, rtol=1e-6)
 
 
 @requires_available_yip
