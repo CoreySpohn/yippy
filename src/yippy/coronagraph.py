@@ -21,7 +21,6 @@ from .logger import logger
 from .offjax import OffJAX
 from .performance import (
     CORE_OVERSAMPLE,
-    CORE_STEP_LOD,
     CORE_WINDOW_LOD,
     compute_core_area_curve,
     compute_core_mean_intensity_curve,
@@ -604,7 +603,12 @@ class Coronagraph:
         return d
 
     def _perf_identity(
-        self, aperture_radius_lod, psf_trunc_ratio, oversample, stellar_diam
+        self,
+        aperture_radius_lod,
+        psf_trunc_ratio,
+        oversample,
+        stellar_diam,
+        separation_step_lod=None,
     ) -> dict:
         """Complete identity of a stored performance table.
 
@@ -639,7 +643,7 @@ class Coronagraph:
             identity.update(
                 {
                     "core_oversample": CORE_OVERSAMPLE,
-                    "core_step_lod": CORE_STEP_LOD,
+                    "core_step_lod": separation_step_lod,
                     "core_window_lod": CORE_WINDOW_LOD,
                 }
             )
@@ -729,6 +733,7 @@ class Coronagraph:
         psf_trunc_ratio=None,
         interp_order=1,
         _validated_cache=False,
+        separation_step_lod=None,
     ):
         """Compute all coronagraph performance curves at once.
 
@@ -749,6 +754,7 @@ class Coronagraph:
             psf_trunc_ratio=psf_trunc_ratio,
             interp_order=interp_order,
             _validated_cache=_validated_cache,
+            separation_step_lod=separation_step_lod,
         )
 
     def _compute_performance_metrics(

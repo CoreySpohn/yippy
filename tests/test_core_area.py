@@ -6,8 +6,8 @@ the solid angle of that region in (lambda/D)^2, the photometric aperture an
 exposure-time calculator multiplies the leaked starlight and the background by,
 and ``Coronagraph.throughput`` is the fraction of the source's light inside it,
 which sets the planet count rate. At every separation, on or between the
-tabulated offsets, both must be those of the PSF yippy synthesizes for a source
-there.
+tabulated offsets, the default curves interpolate the measurements of the
+package PSFs. Explicit separation steps opt into synthesized-PSF measurements.
 
 The references here do not come from the code under test. A circular Gaussian
 of standard deviation sigma and flux F has the core area
@@ -27,6 +27,7 @@ from conftest import REFERENCE_DATA_REQUIRED
 from scipy.optimize import brentq
 
 from yippy import Coronagraph
+from yippy.performance import CORE_STEP_LOD
 
 # Separations (lambda/D) probed, on and between the tabulated offsets.
 GAUSSIAN_SEPARATIONS_LOD = (2.1, 2.37, 3.0, 3.62, 4.13, 5.05)
@@ -174,6 +175,9 @@ def test_core_area_follows_the_synthesized_psf_between_offsets(growth_package, r
     is not the mix of the two cores.
     """
     coro = Coronagraph(growth_package.path, psf_trunc_ratio=ratio)
+    coro.compute_all_performance_curves(
+        psf_trunc_ratio=ratio, separation_step_lod=CORE_STEP_LOD, save_to_fits=False
+    )
     separations = np.array([2.5, 3.0, 3.37, 3.5, 4.6, 4.9])
     expected = np.array(
         [mixture_core_area(growth_package, s, ratio) for s in separations]
@@ -240,14 +244,33 @@ def test_shipped_core_area_matches_the_band_limited_psf(
     band-limited reconstruction over the whole image, eight times finer than
     the package pixels.
     """
-    from lod_unit import lod
-
     coro = shipped_trunc_coro
     pixel_lod = float(coro.pixel_scale_arcsec.value)
     y_offsets = np.asarray(coro.offax.y_offsets, dtype=float)
-    y0 = float(y_offsets[np.argmin(np.abs(y_offsets))])
-    psf = coro.offax(separation_lod * lod, y0 * lod)
-    expected, _ = fourier_upsampled_core(psf, pixel_lod, SHIPPED_RATIO, factor=8)
+    nodes = np.asarray(coro.offax.x_offsets)
+    valid = [
+        i
+        for i, node in enumerate(nodes)
+        if node >= 0
+        and coro.offax.get_psf_by_offset_idx(i, int(np.argmin(np.abs(y_offsets))))
+        is not None
+    ]
+    native_nodes = nodes[valid]
+    lo = native_nodes[native_nodes <= separation_lod].max()
+    hi = native_nodes[native_nodes >= separation_lod].min()
+    values = [
+        fourier_upsampled_core(
+            coro.offax.get_psf_by_offset_idx(
+                int(np.flatnonzero(nodes == s)[0]),
+                int(np.argmin(np.abs(y_offsets))),
+            ),
+            pixel_lod,
+            SHIPPED_RATIO,
+            factor=8,
+        )[0]
+        for s in (lo, hi)
+    ]
+    expected = np.interp(separation_lod, [lo, hi], values)
     got = coro.core_area(separation_lod)
     assert got == pytest.approx(expected, rel=AREA_TOL)
 
@@ -289,6 +312,9 @@ def test_core_throughput_follows_the_synthesized_psf_between_offsets(
     overstates it by 2 to 7 percent here.
     """
     coro = Coronagraph(growth_package.path, psf_trunc_ratio=ratio)
+    coro.compute_all_performance_curves(
+        psf_trunc_ratio=ratio, separation_step_lod=CORE_STEP_LOD, save_to_fits=False
+    )
     separations = np.array([2.5, 3.0, 3.37, 3.5, 4.6, 4.9])
     expected = np.array(
         [mixture_core(growth_package, s, ratio)[1] for s in separations]
@@ -307,14 +333,33 @@ def test_shipped_core_throughput_matches_the_band_limited_psf(
     shipped_trunc_coro, separation_lod
 ):
     """On a shipped package the throughput is the light in the rendered core."""
-    from lod_unit import lod
-
     coro = shipped_trunc_coro
     pixel_lod = float(coro.pixel_scale_arcsec.value)
     y_offsets = np.asarray(coro.offax.y_offsets, dtype=float)
-    y0 = float(y_offsets[np.argmin(np.abs(y_offsets))])
-    psf = coro.offax(separation_lod * lod, y0 * lod)
-    _, expected = fourier_upsampled_core(psf, pixel_lod, SHIPPED_RATIO, factor=8)
+    nodes = np.asarray(coro.offax.x_offsets)
+    valid = [
+        i
+        for i, node in enumerate(nodes)
+        if node >= 0
+        and coro.offax.get_psf_by_offset_idx(i, int(np.argmin(np.abs(y_offsets))))
+        is not None
+    ]
+    native_nodes = nodes[valid]
+    lo = native_nodes[native_nodes <= separation_lod].max()
+    hi = native_nodes[native_nodes >= separation_lod].min()
+    values = [
+        fourier_upsampled_core(
+            coro.offax.get_psf_by_offset_idx(
+                int(np.flatnonzero(nodes == s)[0]),
+                int(np.argmin(np.abs(y_offsets))),
+            ),
+            pixel_lod,
+            SHIPPED_RATIO,
+            factor=8,
+        )[1]
+        for s in (lo, hi)
+    ]
+    expected = np.interp(separation_lod, [lo, hi], values)
     got = coro.throughput(separation_lod)
     assert got == pytest.approx(expected, rel=THROUGHPUT_TOL)
 
@@ -460,3 +505,32 @@ def test_core_converges_in_subpixels(shipped_trunc_coro, separation_lod):
     )
     assert float(a10) == pytest.approx(float(a20), rel=5e-3)
     assert float(t10) == pytest.approx(float(t20), rel=5e-3)
+
+
+@pytest.mark.parametrize("curve", ["both", "throughput", "area"])
+def test_default_core_separations_are_the_package_offsets(growth_package, curve):
+    """Default curves rely only on PSFs supplied by the package."""
+    from yippy.performance import (
+        compute_truncation_core_area_curve,
+        compute_truncation_curves,
+        compute_truncation_throughput_curve,
+    )
+
+    coro = Coronagraph(growth_package.path, psf_trunc_ratio=0.5)
+    compute = {
+        "both": compute_truncation_curves,
+        "throughput": compute_truncation_throughput_curve,
+        "area": compute_truncation_core_area_curve,
+    }[curve]
+    sep = compute(coro)[0]
+    nodes = np.unique(growth_package.offsets[:, 0])
+    np.testing.assert_array_equal(sep, nodes[nodes >= 0])
+
+
+def test_synthesized_core_separations_remain_opt_in(growth_package):
+    """Explicit synthesis adds the quarter-lambda/D grid between native offsets."""
+    from yippy.performance import CORE_STEP_LOD, compute_truncation_curves
+
+    coro = Coronagraph(growth_package.path)
+    sep = compute_truncation_curves(coro, separation_step_lod=CORE_STEP_LOD)[0]
+    np.testing.assert_array_equal(sep, np.append(np.arange(0, 5.01, 0.25), 6.0))

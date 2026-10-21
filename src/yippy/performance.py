@@ -622,7 +622,7 @@ def compute_truncation_curves(
     coro: Coronagraph,
     psf_trunc_ratio: float = 0.5,
     oversample: int | None = CORE_OVERSAMPLE,
-    separation_step_lod: float | None = CORE_STEP_LOD,
+    separation_step_lod: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Core throughput and core area with a PSF-truncation-ratio aperture.
 
@@ -630,11 +630,12 @@ def compute_truncation_curves(
     the throughput is the fraction of the source's light inside it (AYO's
     ``photap_frac``) and the area its solid angle in (lam/D)**2 (AYO's
     ``omega_lod``), both measured on ``oversample`` subpixels per pixel side
-    (:func:`truncation_core`). They are tabulated every
-    ``separation_step_lod`` on the PSF yippy synthesizes at each separation
-    (:func:`core_separations`), so between the package's off-axis offsets
-    the curves describe the PSF an image simulator renders there, not a
-    straight line between the offsets' values.
+    (:func:`truncation_core`). By default only the package's own non-negative
+    off-axis offsets are measured. The curves interpolate those measurements
+    between offsets. Passing ``separation_step_lod=CORE_STEP_LOD`` opts into
+    measuring synthesized PSFs on a quarter-lambda/D grid as well
+    (:func:`core_separations`); their optical accuracy between shipped offsets
+    cannot be established from the package alone.
 
     Args:
         coro: Coronagraph instance.
@@ -645,7 +646,8 @@ def compute_truncation_curves(
             factor the circular-aperture curves take: it sets the resolution
             of the core boundary, so values below 10 quantize the core area.
         separation_step_lod: Spacing of the separation grid in lambda/D.
-            ``None`` tabulates at the package's own off-axis offsets.
+            Defaults to ``None`` for the package's own off-axis offsets.
+            Pass :data:`CORE_STEP_LOD` to opt into synthesized PSFs.
 
     Returns:
         ``(separations, throughputs, core_areas)`` - 1-D arrays sorted by
@@ -694,7 +696,7 @@ def compute_truncation_throughput_curve(
     coro: Coronagraph,
     psf_trunc_ratio: float = 0.5,
     oversample: int | None = CORE_OVERSAMPLE,
-    separation_step_lod: float | None = CORE_STEP_LOD,
+    separation_step_lod: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Core throughput with a PSF-truncation-ratio aperture.
 
@@ -714,7 +716,7 @@ def compute_truncation_core_area_curve(
     coro: Coronagraph,
     psf_trunc_ratio: float = 0.5,
     oversample: int | None = CORE_OVERSAMPLE,
-    separation_step_lod: float | None = CORE_STEP_LOD,
+    separation_step_lod: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Core area with a PSF-truncation-ratio aperture.
 
@@ -932,6 +934,7 @@ def compute_all_performance_curves(
     psf_trunc_ratio: float | None = None,
     interp_order: int = 1,
     _validated_cache: bool = False,
+    separation_step_lod: float | None = None,
 ) -> dict:
     """Compute (or load) all coronagraph performance curves.
 
@@ -958,8 +961,9 @@ def compute_all_performance_curves(
     a truncation ratio the core throughput and core area are measured on
     :data:`CORE_OVERSAMPLE` subpixels per pixel side, because a core counted
     in coarser cells moves by whole cells as the source moves within a pixel,
-    and they are tabulated every :data:`CORE_STEP_LOD` on synthesized PSFs
-    (:func:`compute_truncation_curves`) and stored in the table's core table.
+    and stored in the table's core table at the package's own off-axis offsets.
+    ``separation_step_lod=CORE_STEP_LOD`` opts into a grid of synthesized PSFs
+    (:func:`compute_truncation_curves`); the default is ``None``.
 
     Returns a dict of all curve data for convenience. ``throughput`` and
     ``raw_contrast`` are on ``separations``; in truncation mode that
@@ -1009,7 +1013,11 @@ def compute_all_performance_curves(
         logger.info(
             f"Computing core throughput and area (trunc ratio = {psf_trunc_ratio})..."
         )
-        core = compute_truncation_curves(coro, psf_trunc_ratio=psf_trunc_ratio)
+        core = compute_truncation_curves(
+            coro,
+            psf_trunc_ratio=psf_trunc_ratio,
+            separation_step_lod=separation_step_lod,
+        )
 
     if not loaded:
         logger.info("Computing raw contrast curve...")
@@ -1037,6 +1045,7 @@ def compute_all_performance_curves(
                     psf_trunc_ratio=psf_trunc_ratio,
                     oversample=oversample,
                     stellar_diam=stellar_diam,
+                    separation_step_lod=separation_step_lod,
                 )
             save_coro_performance_to_fits(
                 sep,

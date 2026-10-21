@@ -474,3 +474,19 @@ def test_stale_object_does_not_label_cube_as_new_source(tmp_path):
     warm = Coronagraph(path)
     cold = Coronagraph(_small_2dq(tmp_path, "cold", psf_flux=0.5))
     _assert_same_cube(warm, cold)
+
+
+def test_synthesized_core_cache_does_not_feed_default_curves(tmp_path):
+    """Opt-in synthesized core tables cannot masquerade as native-offset tables."""
+    path = _yip(tmp_path, "warm", offset_step_lod=2.0)
+    obj = Coronagraph(path, psf_trunc_ratio=0.5)
+    expected = _metrics(obj)
+    obj.compute_all_performance_curves(
+        psf_trunc_ratio=0.5,
+        separation_step_lod=perf.CORE_STEP_LOD,
+        performance_file=obj._perf_filename(),
+        cache_dir=obj._perf_dir,
+    )
+    warm = Coronagraph(path, psf_trunc_ratio=0.5)
+    for name, value in _metrics(warm).items():
+        assert_allclose(value, expected[name], rtol=RTOL, err_msg=name)
