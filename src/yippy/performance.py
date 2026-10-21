@@ -550,7 +550,7 @@ def core_subpixel_window(
     return fine, start_y, start_x
 
 
-def _peak_index(image, nominal_center=None, search_radius_pix=None):
+def _peak_index(image, nominal_center=None, search_radius_pix=None, valid=None):
     """Locate the brightest sample within the nominal source's search disk."""
     if nominal_center is None:
         return jnp.unravel_index(jnp.argmax(image), image.shape)
@@ -558,17 +558,24 @@ def _peak_index(image, nominal_center=None, search_radius_pix=None):
     cols = jnp.arange(image.shape[1])[None, :] - nominal_center[1]
     inside = rows**2 + cols**2 <= search_radius_pix**2
     # Native offsets beyond the image retain the global, in-image core.
-    valid = (
-        (nominal_center[0] >= 0)
-        & (nominal_center[0] < image.shape[0])
-        & (nominal_center[1] >= 0)
-        & (nominal_center[1] < image.shape[1])
-    )
+    valid = _nominal_in_image(nominal_center, image.shape) if valid is None else valid
     candidates = jnp.where(inside | ~valid, image, -jnp.inf)
     return jnp.unravel_index(jnp.argmax(candidates), image.shape)
 
 
-def _window_peak(fine, start_y, start_x, oversample, nominal_center, search_radius_pix):
+def _nominal_in_image(nominal_center, shape):
+    """Keep source validity in original image coordinates."""
+    return (
+        (nominal_center[0] >= 0)
+        & (nominal_center[0] < shape[0])
+        & (nominal_center[1] >= 0)
+        & (nominal_center[1] < shape[1])
+    )
+
+
+def _window_peak(
+    fine, start_y, start_x, oversample, nominal_center, search_radius_pix, image_shape
+):
     """Peak sample in a window, restricted in global pixel coordinates."""
     center = (
         None
@@ -578,7 +585,14 @@ def _window_peak(fine, start_y, start_x, oversample, nominal_center, search_radi
             (nominal_center[1] - start_x + 0.5) * oversample - 0.5,
         )
     )
-    row, col = _peak_index(fine, center, search_radius_pix * oversample)
+    row, col = _peak_index(
+        fine,
+        center,
+        search_radius_pix * oversample,
+        valid=None
+        if nominal_center is None
+        else _nominal_in_image(nominal_center, image_shape),
+    )
     return jnp.array(
         [
             start_y + (row + 0.5) / oversample - 0.5,
@@ -769,7 +783,7 @@ def circular_aperture(
         psf, oversample, half_width_pix, nominal_center, search_radius
     )
     center = _window_peak(
-        fine, start_y, start_x, oversample, nominal_center, search_radius
+        fine, start_y, start_x, oversample, nominal_center, search_radius, psf.shape
     )
     refined, _ = _refine_peak(psf, center, oversample, nominal_center, search_radius)
     rows = (
@@ -862,7 +876,7 @@ def truncation_core(
     )
     n_y, n_x = fine.shape[0] // oversample, fine.shape[1] // oversample
     center = _window_peak(
-        fine, start_y, start_x, oversample, nominal_center, search_radius
+        fine, start_y, start_x, oversample, nominal_center, search_radius, psf.shape
     )
     _, peak = _refine_peak(psf, center, oversample, nominal_center, search_radius)
     threshold = psf_trunc_ratio * peak

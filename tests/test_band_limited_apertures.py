@@ -348,3 +348,14 @@ def test_nominal_search_preserves_fractional_pixel_position():
     pos = next(_iter_xaxis_positions(coro))
     assert pos.px == pytest.approx(16.3)
     assert pos.py == pytest.approx(16.2)
+
+
+@pytest.mark.parametrize("column", [31.4, 31.6])
+def test_fractional_edge_search_excludes_competing_lobe(column):
+    """An in-image source keeps its search disk after window conversion."""
+    y, x = np.indices((32, 32))
+    psf = 0.001 * np.exp(-((y - 16) ** 2 + (x - 31.4) ** 2) / 4)
+    psf += np.exp(-((y - 16) ** 2 + (x - 19) ** 2) / 4)
+    with jax.enable_x64():
+        flux, _, _ = circular_aperture(psf, 2.8, 0.25, nominal_center=(16.0, column))
+    assert float(flux) < 0.02
