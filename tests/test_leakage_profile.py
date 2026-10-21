@@ -172,3 +172,26 @@ def test_jax_view_matches_the_loader_between_diameters(ring_coro):
 def test_diameter_outside_the_tabulated_range_is_nan(ring_coro):
     """The loader does not extrapolate the curve past its largest diameter."""
     assert np.isnan(ring_coro.core_mean_intensity(2.5, 0.3 * lod))
+
+
+@pytest.mark.parametrize("diameter", [0.0, 0.075])
+@pytest.mark.parametrize("shape", [(3,), (2, 2)])
+def test_eqx_separation_arrays_keep_shape(ring_coro, diameter, shape):
+    """Array evaluation agrees with scalar vmap, eagerly and under JIT."""
+    import jax
+    import jax.numpy as jnp
+
+    from yippy import EqxCoronagraph
+
+    coro = EqxCoronagraph(yippy_coro=ring_coro)
+    separations = jnp.linspace(1.5, 3.5, np.prod(shape)).reshape(shape)
+    expected = jax.vmap(lambda s: coro.core_mean_intensity(s, diameter))(
+        separations.ravel()
+    ).reshape(shape)
+    for evaluate in (
+        coro.core_mean_intensity,
+        jax.jit(lambda s, d: coro.core_mean_intensity(s, d)),
+    ):
+        result = evaluate(separations, diameter)
+        assert result.shape == shape
+        np.testing.assert_allclose(result, expected, rtol=1e-6)

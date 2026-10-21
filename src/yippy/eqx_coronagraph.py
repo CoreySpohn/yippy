@@ -356,13 +356,16 @@ class EqxCoronagraph(eqx.Module):
                 Default is 0.0 (point source).
 
         Returns:
-            Scalar core mean intensity: the azimuthal mean, about the
-            optical axis, of the fraction of the star's light falling on
+            Core mean intensity with the shape of separation_lod: the azimuthal
+            mean, about the optical axis, of the fraction of the star's light falling on
             one pixel. The unit is per pixel of ``pixel_scale_lod``, not per
             unit solid angle; divide by ``pixel_scale_lod**2`` for
             (lambda/D)^-2.
         """
-        point_source = self._core_mean_intensity_interp(separation_lod)
+        separation_lod = jnp.asarray(separation_lod)
+        point_source = self._core_mean_intensity_interp(separation_lod.ravel()).reshape(
+            separation_lod.shape
+        )
         if not self._core_intensity_varies_with_diameter:
             return point_source
 
@@ -388,12 +391,14 @@ class EqxCoronagraph(eqx.Module):
             # only the two profile circles that bracket the separation.
             i = jnp.clip(jnp.searchsorted(radii, r_pix) - 1, 0, radii.size - 2)
             pair = radii[jnp.stack([i, i + 1])]
-            means = azimuthal_mean_profile(stellar_map, self._stellar_axis, pair)
+            means = azimuthal_mean_profile(
+                stellar_map, self._stellar_axis, pair.ravel()
+            ).reshape(pair.shape)
             frac = (r_pix - pair[0]) / (pair[1] - pair[0])
             return means[0] + frac * (means[1] - means[0])
         profile = azimuthal_mean_profile(stellar_map, self._stellar_axis, radii)
         interp = interpax.CubicSpline(radii * self.pixel_scale_lod, profile)
-        return interp(r_pix * self.pixel_scale_lod)
+        return interp((r_pix * self.pixel_scale_lod).ravel()).reshape(r_pix.shape)
 
 
 # -- Helpers ------------------------------------------------------------------
