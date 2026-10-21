@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import warnings
 from pathlib import Path
 
 import astropy.io.fits as pyfits
@@ -252,6 +253,17 @@ class Coronagraph:
         # Update pixel_scale_arcsec if downsampling was applied
         if downsample_shape is not None:
             self.pixel_scale_arcsec = self.offax.pixel_scale_arcsec
+
+        # Check the realized sampling once, including when curves load from cache.
+        pixel_scale_lod = float(self.pixel_scale_arcsec.value)
+        if pixel_scale_lod > 0.5:
+            warnings.warn(
+                f"PSF pixel scale {pixel_scale_lod:g} lambda/D per pixel exceeds "
+                "the Nyquist limit of 0.5 lambda/D per pixel; band-limited "
+                "aperture measurements may be aliased. Computing anyway.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         # Get the sky_trans mask
         self.sky_trans = SkyTrans(yip_path, sky_trans_file)
