@@ -30,3 +30,40 @@ most of the science region. The figure below focuses on throughput and
 sky transmission, the two metrics with meaningful variation.
 
 ![Yippy vs AYO validation](_static/fig_benchmarking_all_metrics.png)
+
+
+## Reproducible aperture accuracy benchmark
+
+Run `tools/benchmark_apertures.py` from an environment with yippy and its
+scientific dependencies installed. To measure the source checkout:
+
+```sh
+PYTHONPATH=src python tools/benchmark_apertures.py output/aperture-convergence
+```
+
+Add `--airy-only` for the analytic checks without downloading a package.
+The script does not load historical commits or import test modules. Generated
+CSVs belong in the ignored `output/` directory and are not checked in.
+
+The analytic reference is the clear circular pupil in Born and Wolf,
+*Principles of Optics*, seventh edition, section 8.5.2. The intensity is
+`(pi / 4) * (2 * J1(pi*r) / (pi*r))**2` and encircled energy is
+`1 - J0(pi*r)**2 - J1(pi*r)**2`, with radius in lambda/D. Images contain
+256 by 256 samples at 0.25 and 0.5 lambda/D per pixel, shifted by zero or
+0.3 pixel, without renormalizing the cropped wings. The half-maximum radius
+is the numerical root of the analytic intensity ratio.
+
+`airy.csv` compares 10x circular flux and half-maximum flux/area with these
+analytic values. `convergence.csv` reports 5x, 10x, 20x and 40x measurements
+of a shifted Airy and a native AAVC PSF near 20 lambda/D.
+`shipped_gates.csv` compares 10x with 40x for every non-negative native offset
+of the public `eac1_aavc_2d` package, including nominal locations outside the
+image. The reference is the same current interpolant at finer quadrature,
+not a historical implementation. The acceptance gate is 0.1% relative error
+for both throughput and area, with the Airy gate tested independently.
+
+Each run writes `provenance.json` with the yippy and dependency versions,
+package release and archive MD5 from the public dataset registry, sampling,
+image size, shift, aperture settings and precision. This identifies the
+inputs and method without requiring Git history. The maintained tests
+regenerate the Airy table with Git absent from PATH and assert its accuracy.

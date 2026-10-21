@@ -1,30 +1,28 @@
-"""Write reproducible aperture accuracy tables for the public AAVC and Airy PSFs.
+"""Regenerate aperture accuracy evidence using analytic and current-code references.
 
-Run from the repository root with the repository on PYTHONPATH::
+Run from a source checkout with its src directory on PYTHONPATH::
 
-    python tests/test_aperture_convergence.py results/aperture-convergence
+    python tools/benchmark_apertures.py output/aperture-convergence
 
-The old circle column executes performance.py from commit 3fc8081 at 2x
-oversampling. The analytic Airy reference is Born and Wolf, Principles of
-Optics, 7th edition, section 8.5.2, as documented in the test helpers.
+Use --airy-only for an offline analytic check. No historical Git objects or
+imports from the test suite are required. See docs/benchmarking.md for provenance.
 """
 
 import argparse
 import csv
-import subprocess
-import sys
-import types
+import json
+from importlib.metadata import version
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from scipy.optimize import brentq
-from scipy.special import j1
-from test_band_limited_apertures import airy_psf, encircled_energy, image_coro
+from scipy.special import j0, j1
 
-from yippy import Coronagraph, fetch_yip
+from yippy import Coronagraph, __version__, fetch_yip
 from yippy import performance as perf
+from yippy.datasets import CATALOG, DATA_RELEASE_TAG
 
 
 def write_table(directory, name, header, rows):
@@ -35,16 +33,19 @@ def write_table(directory, name, header, rows):
         writer.writerows(rows)
 
 
-def historical_performance(revision):
-    """Load an immutable historical module without modifying the checkout."""
-    module = types.ModuleType(f"yippy.performance_{revision}")
-    module.__package__ = "yippy"
-    sys.modules[module.__name__] = module
-    source = subprocess.check_output(
-        ["git", "show", f"{revision}:src/yippy/performance.py"], text=True
-    )
-    exec(compile(source, f"performance@{revision}", "exec"), module.__dict__)
-    return module
+def airy_psf(pixel_lod, shift_pix=0.0, size=256):
+    """Unit-flux Airy samples without renormalizing the finite crop."""
+    rows, cols = np.indices((size, size))
+    x = np.pi * np.hypot(rows - size // 2, cols - size // 2 - shift_pix) * pixel_lod
+    amplitude = 2 * j1(x) / np.where(x == 0, 1.0, x)
+    amplitude[x == 0] = 1.0
+    return np.pi / 4 * amplitude**2 * pixel_lod**2
+
+
+def encircled_energy(radius_lod):
+    """Exact infinite-image Airy encircled energy (Born and Wolf 8.5.2)."""
+    x = np.pi * radius_lod
+    return 1 - j0(x) ** 2 - j1(x) ** 2
 
 
 def measure(psf, pixel_lod, factor, ratio, center):
@@ -70,17 +71,51 @@ def measure(psf, pixel_lod, factor, ratio, center):
         return [float(v) for v in (cf, ca, tf, ta)]
 
 
-def main(directory):
+def main(directory, airy_only=False):
     """Measure all requested gates, including every native shipped offset."""
     directory.mkdir(parents=True, exist_ok=True)
+    provenance = {
+        "yippy_version": __version__,
+        "dependencies": {
+            name: version(name) for name in ("jax", "numpy", "scipy", "hwoutils")
+        },
+        "oversample": [10, 40],
+        "references": {
+            "airy": "Born and Wolf, Principles of Optics, 7th ed., section 8.5.2",
+            "shipped": {
+                "name": "eac1_aavc_2d",
+                "release": DATA_RELEASE_TAG,
+                "archive_md5": CATALOG["eac1_aavc_2d"]["md5"],
+            },
+        },
+        "settings": {
+            "circle_radius_lod": 0.7,
+            "shipped_truncation_ratio": 0.3,
+            "peak_search_radius_lod": perf.PEAK_SEARCH_RADIUS_LOD,
+            "core_window_lod": perf.CORE_WINDOW_LOD,
+            "airy_size": 256,
+            "airy_pixel_lod": [0.25, 0.5],
+            "airy_shift_pix": [0.0, 0.3],
+            "precision": "float64",
+        },
+        "airy_only": airy_only,
+    }
+    (directory / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
     half_max = brentq(lambda r: (2 * j1(np.pi * r) / (np.pi * r)) ** 2 - 0.5, 0.1, 1)
     airy_rows = []
     for pixel_lod in (0.25, 0.5):
         for shift in (0.0, 0.3):
             psf = airy_psf(pixel_lod, shift)
-            coro = image_coro(psf, pixel_lod)
             for radius in (0.7, 1.0, 1.22):
-                flux = perf.compute_throughput_curve(coro, radius)[1][0]
+                with jax.enable_x64():
+                    flux = float(
+                        perf.circular_aperture(
+                            jnp.asarray(psf),
+                            radius / pixel_lod,
+                            pixel_lod,
+                            nominal_center=(128.0, 128.0),
+                        )[0]
+                    )
                 airy_rows.append(
                     [
                         pixel_lod,
@@ -106,6 +141,10 @@ def main(directory):
         airy_rows,
     )
 
+    if airy_only:
+        print(f"Wrote analytic Airy evidence to {directory}.")
+        return
+
     coro = Coronagraph(fetch_yip("eac1_aavc_2d"))
     positions = list(perf._iter_xaxis_positions(coro))
     pixel_lod = float(coro.pixel_scale_arcsec.value)
@@ -126,7 +165,7 @@ def main(directory):
     )
 
     all_offsets = []
-    for pos in inside:
+    for pos in positions:
         values = [
             measure(pos.psf, pixel_lod, factor, 0.3, (pos.py, pos.px))
             for factor in (10, 40)
@@ -142,26 +181,6 @@ def main(directory):
         ],
         all_offsets,
     )
-    old = historical_performance("3fc8081")
-    previous = historical_performance("436a876")
-    offsets, old_flux = old.compute_throughput_curve(coro, oversample=2)
-    _, new_flux = perf.compute_throughput_curve(coro)
-    _, previous_flux = previous.compute_throughput_curve(coro)
-    write_table(
-        directory,
-        "shipped_circle.csv",
-        ["offset_lod", "old_cubic_2x", "previous_counted_10x", "fractional_10x"],
-        zip(offsets, old_flux, previous_flux, new_flux, strict=True),
-    )
-    pos = positions[0]
-    old_core = previous.truncation_core(pos.psf, 0.3, pixel_lod)
-    new_core = measure(pos.psf, pixel_lod, 10, 0.3, (pos.py, pos.px))[2:]
-    write_table(
-        directory,
-        "iwa_core.csv",
-        ["method", "core_flux", "core_area_lod2"],
-        [["previous_global", *map(float, old_core)], ["nominal_local", *new_core]],
-    )
     print(
         f"Wrote tables to {directory}; shipped convergence offset {shipped.separation}."
     )
@@ -170,4 +189,10 @@ def main(directory):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("directory", type=Path)
-    main(parser.parse_args().directory)
+    parser.add_argument(
+        "--airy-only",
+        action="store_true",
+        help="Run analytic cases without downloading a YIP.",
+    )
+    args = parser.parse_args()
+    main(args.directory, airy_only=args.airy_only)
