@@ -16,14 +16,18 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from lod_unit import lod
+from scipy.integrate import quad
 from scipy.optimize import brentq
-from scipy.special import j0, j1
+from scipy.special import j0, j1, jvp
 
 from yippy.performance import (
+    _iter_xaxis_positions,
+    _point_source_in_image,
     circular_aperture,
     compute_core_area_curve,
     compute_raw_contrast_curve,
     compute_throughput_curve,
+    core_subpixel_window,
     core_window_half_width_pix,
     truncation_core,
 )
@@ -63,20 +67,7 @@ def encircled_energy(radius_lod):
 
 @pytest.mark.parametrize("pixel_lod", [0.25, 0.5])
 @pytest.mark.parametrize("shift_pix", [0.0, 0.3])
-@pytest.mark.parametrize(
-    "radius_lod",
-    [
-        pytest.param(
-            0.7,
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="10x center counting exceeds 0.1% continuum error at r=0.7",
-            ),
-        ),
-        1.0,
-        1.22,
-    ],
-)
+@pytest.mark.parametrize("radius_lod", [0.7, 1.0, 1.22])
 def test_circle_airy_encircled_energy(pixel_lod, shift_pix, radius_lod):
     """A circular sum recovers the Airy encircled energy at each sampling phase."""
     coro = image_coro(airy_psf(pixel_lod, shift_pix), pixel_lod)
@@ -87,9 +78,6 @@ def test_circle_airy_encircled_energy(pixel_lod, shift_pix, radius_lod):
 @pytest.mark.parametrize("pixel_lod", [0.25, 0.5])
 @pytest.mark.parametrize("shift_pix", [0.0, 0.3])
 @pytest.mark.parametrize("metric", ["area", "throughput"])
-@pytest.mark.xfail(
-    strict=True, reason="10x whole-cell Airy half-maximum core exceeds 0.1% error"
-)
 def test_truncation_airy_half_maximum(pixel_lod, shift_pix, metric):
     """The half-maximum core has the Airy FWHM area and encircled energy."""
     radius = brentq(lambda r: (2 * j1(np.pi * r) / (np.pi * r)) ** 2 - 0.5, 0.1, 1)
@@ -127,12 +115,12 @@ def test_flat_image_flux_is_the_counted_circle_area():
     assert contrast * flux == pytest.approx(3 * area / 0.25**2, rel=1e-6)
 
 
-def test_circle_counts_centers_on_its_boundary():
-    """The four axial centers at radius 28 subpixels belong to the circle."""
+def test_circle_fractional_boundary_has_analytic_area():
+    """Fractions of boundary cells tile the disk to one part per million."""
     coro = image_coro(airy_psf(0.25, size=64), 0.25)
-    # Integer lattice points in a closed disk of radius 28: 2453 cells.
+    # Boundary fractions must tile the analytic disk, including axial cells.
     area = compute_core_area_curve(coro)[1][0]
-    assert area == pytest.approx(2453 * 0.025**2, rel=1e-6)
+    assert area == pytest.approx(np.pi * 0.7**2, rel=1e-6)
 
 
 @pytest.mark.parametrize("pixel_lod", [0.25, 0.5])
@@ -140,15 +128,14 @@ def test_circle_counts_centers_on_its_boundary():
 @pytest.mark.parametrize("radius_lod", [0.7, 1.0, 1.22])
 def test_circle_matches_independently_sampled_airy(pixel_lod, shift_pix, radius_lod):
     """The DFT sum agrees with exact Airy values at the same subpixel centers."""
-    # Relative to the brightest subpixel the source is half a subpixel away
-    # on each axis. A 0.3-pixel shift moves it by exactly three subpixels.
-    half = int(np.ceil(radius_lod / pixel_lod * 10))
-    rows, cols = np.mgrid[-half : half + 1, -half : half + 1]
-    radius = np.hypot(rows + 0.5, cols + 0.5) * pixel_lod / 10
+    half = int(np.ceil(radius_lod / pixel_lod * 10)) + 1
+    rows, cols = np.mgrid[-half:half, -half:half] + 0.5
+    h = pixel_lod / 10
+    radius = np.hypot(rows, cols) * h
     x = np.pi * radius
     intensity = np.pi / 4 * (2 * j1(x) / x) ** 2
-    inside = rows**2 + cols**2 <= (radius_lod / pixel_lod * 10) ** 2 + 1e-10
-    expected = intensity[inside].sum() * (pixel_lod / 10) ** 2
+    weights = reference_circle_weights(rows, cols, radius_lod / h)
+    expected = (weights * intensity).sum() * h**2
     coro = image_coro(airy_psf(pixel_lod, shift_pix), pixel_lod)
     measured = compute_throughput_curve(coro, aperture_radius_lod=radius_lod)[1][0]
     assert measured == pytest.approx(expected, rel=2e-6)
@@ -162,65 +149,61 @@ def test_truncation_matches_independently_sampled_airy(pixel_lod, shift_pix):
     radius = np.hypot(rows, cols) * pixel_lod / 10
     x = np.pi * radius
     intensity = np.pi / 4 * (2 * j1(x) / x) ** 2
-    above = intensity > 0.5 * intensity.max()
-    expected_area = above.sum() * (pixel_lod / 10) ** 2
-    expected_flux = intensity[above].sum() * (pixel_lod / 10) ** 2
-    flux, area = truncation_core(
-        airy_psf(pixel_lod, shift_pix),
-        0.5,
-        pixel_lod,
-        half_width_pix=core_window_half_width_pix(pixel_lod),
-    )
+    h = pixel_lod / 10
+    amplitude = 2 * j1(x) / x
+    derivative = np.pi**2 / 2 * amplitude * (2 * jvp(1, x) / x - 2 * j1(x) / x**2)
+    grad_y = derivative * rows * h / radius
+    grad_x = derivative * cols * h / radius
+    weights = reference_level_weights(intensity - np.pi / 8, grad_y * h, grad_x * h)
+    expected_area = weights.sum() * h**2
+    expected_flux = (intensity * weights).sum() * h**2
+    with jax.enable_x64():
+        flux, area = truncation_core(
+            airy_psf(pixel_lod, shift_pix),
+            0.5,
+            pixel_lod,
+            half_width_pix=core_window_half_width_pix(pixel_lod),
+        )
     assert float(area) == pytest.approx(expected_area, rel=1e-6)
     assert float(flux) == pytest.approx(expected_flux, rel=2e-6)
 
 
-@pytest.mark.parametrize(
-    "aperture",
-    [
-        pytest.param(
-            "circle",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="10x circular center counting exceeds 0.1% convergence at r=0.7",
-            ),
-        ),
-        "truncation",
-    ],
-)
+@pytest.mark.parametrize("aperture", ["circle", "truncation"])
 @pytest.mark.parametrize("metric", ["throughput", "area"])
 def test_shipped_ten_against_forty_subpixels(shipped_coro, aperture, metric):
     """Quantify 10x boundary quadrature against 40x on a native shipped PSF."""
     coro = shipped_coro
-    # Use the native PSF nearest 20 lambda/D, in the unobscured science region.
-    nodes = np.asarray(coro.offax.x_offsets)
-    iy = int(np.argmin(np.abs(np.asarray(coro.offax.y_offsets))))
-    valid = [
-        i
-        for i in range(len(nodes))
-        if coro.offax.get_psf_by_offset_idx(i, iy) is not None
-    ]
-    ix = min(valid, key=lambda i: abs(nodes[i] - 20))
-    psf = coro.offax.get_psf_by_offset_idx(ix, iy)
     pixel_lod = float(coro.pixel_scale_arcsec.value)
-    values = []
-    for factor in (10, 40):
-        if aperture == "circle":
-            sampled = image_coro(psf, pixel_lod)
-            result = (
-                compute_throughput_curve(sampled, oversample=factor)[1][0],
-                compute_core_area_curve(sampled, oversample=factor)[1][0],
-            )
-        else:
-            result = truncation_core(
-                psf,
-                0.3,
-                pixel_lod,
-                oversample=factor,
-                half_width_pix=core_window_half_width_pix(pixel_lod),
-            )
-        values.append(float(result[0 if metric == "throughput" else 1]))
-    assert values[0] == pytest.approx(values[1], rel=1e-3)
+    for pos in _iter_xaxis_positions(coro):
+        if not _point_source_in_image(pos):
+            continue
+        values = []
+        for factor in (10, 40):
+            with jax.enable_x64():
+                psf = jnp.asarray(pos.psf, dtype=jnp.float64)
+                if aperture == "circle":
+                    result = circular_aperture(
+                        psf,
+                        0.7 / pixel_lod,
+                        pixel_lod,
+                        oversample=factor,
+                        half_width_pix=int(np.ceil(1.7 / pixel_lod)) + 1,
+                        nominal_center=(pos.py, pos.px),
+                    )
+                else:
+                    result = truncation_core(
+                        psf,
+                        0.3,
+                        pixel_lod,
+                        oversample=factor,
+                        half_width_pix=core_window_half_width_pix(pixel_lod),
+                        nominal_center=(pos.py, pos.px),
+                    )
+                values.append(float(result[0 if metric == "throughput" else 1]))
+        assert values[0] == pytest.approx(values[1], rel=1e-3), (
+            f"offset={pos.separation}, {aperture} {metric}: "
+            f"10x={values[0]}, 40x={values[1]}"
+        )
 
 
 def test_shipped_contrast_is_repeatable_for_faint_stellar_sums(shipped_coro):
@@ -239,5 +222,129 @@ def test_circular_aperture_composes_under_jit():
         )(jnp.zeros((8, 8)))
     assert float(flux) == 0
     assert float(star_flux) == 0
-    # A radius-20-subpixel closed quadrant has 335 centers.
-    assert float(area) == pytest.approx(335 * 0.025**2, rel=1e-6)
+    # The first subpixel is half a subpixel inside each image edge.
+    expected = quad(
+        lambda x: np.sqrt(20**2 - x**2) + 0.5, -0.5, np.sqrt(20**2 - 0.5**2)
+    )[0]
+    expected += quad(lambda x: 2 * np.sqrt(20**2 - x**2), np.sqrt(20**2 - 0.5**2), 20)[
+        0
+    ]
+    assert float(area) == pytest.approx(expected * 0.025**2, rel=1e-6)
+
+
+def test_shipped_circle_stays_near_nominal_source(shipped_coro):
+    """A dark on-axis source must not jump to a remote leakage speckle."""
+    _, flux = compute_throughput_curve(shipped_coro)
+    assert flux[0] < 1e-8
+    first_max = next(i for i in range(1, len(flux) - 1) if flux[i] > flux[i + 1])
+    assert np.all(np.diff(flux[: first_max + 1]) >= 0)
+
+
+def reference_circle_weights(rows, cols, radius):
+    """Independently integrate circle-square overlaps with adaptive quadrature."""
+    weights = np.zeros_like(rows)
+    inner = (np.abs(rows) + 0.5) ** 2 + (np.abs(cols) + 0.5) ** 2 <= radius**2
+    outer = (
+        np.maximum(np.abs(rows) - 0.5, 0) ** 2 + np.maximum(np.abs(cols) - 0.5, 0) ** 2
+        >= radius**2
+    )
+    weights[inner] = 1
+    for i, j in zip(*np.where(~inner & ~outer), strict=True):
+        y, x = rows[i, j], cols[i, j]
+        lo, hi = max(-radius, x - 0.5), min(radius, x + 0.5)
+        points = []
+        for edge in (y - 0.5, y + 0.5):
+            if abs(edge) < radius:
+                crossing = np.sqrt(radius**2 - edge**2)
+                points.extend(v for v in (-crossing, crossing) if lo < v < hi)
+
+        def height(xx, y=y):
+            bound = np.sqrt(max(radius**2 - xx**2, 0))
+            return max(0, min(y + 0.5, bound) - max(y - 0.5, -bound))
+
+        weights[i, j] = quad(height, lo, hi, points=points, epsabs=1e-11)[0]
+    return weights
+
+
+def reference_level_weights(level, gy, gx):
+    """Clip each boundary square to an analytic tangent half-plane."""
+    extent = (np.abs(gy) + np.abs(gx)) / 2
+    weights = (level >= extent).astype(float)
+    square = [np.array(p) for p in [(-0.5, -0.5), (-0.5, 0.5), (0.5, 0.5), (0.5, -0.5)]]
+    for i, j in zip(*np.where(np.abs(level) < extent), strict=True):
+        polygon = []
+        gradient = np.array([gy[i, j], gx[i, j]])
+        for a, b in zip(square, square[1:] + square[:1], strict=True):
+            va, vb = level[i, j] + gradient @ a, level[i, j] + gradient @ b
+            if va >= 0:
+                polygon.append(a)
+            if (va >= 0) != (vb >= 0):
+                polygon.append(a + va / (va - vb) * (b - a))
+        vertices = np.array(polygon)
+        weights[i, j] = (
+            abs(
+                np.sum(
+                    vertices[:, 0] * np.roll(vertices[:, 1], 1)
+                    - vertices[:, 1] * np.roll(vertices[:, 0], 1)
+                )
+            )
+            / 2
+        )
+    return weights
+
+
+def test_dft_gradients_match_periodic_modes():
+    """The level-set normal is the spectral derivative, including both axes."""
+    y, x = np.indices((24, 24))
+    psf = 2 + np.sin(2 * np.pi * y / 24) + 0.3 * np.cos(4 * np.pi * x / 24)
+    with jax.enable_x64():
+        fine, sy, sx, gy, gx = core_subpixel_window(
+            psf, half_width_pix=3, return_gradient=True
+        )
+    yy = float(sy) + (np.arange(fine.shape[0]) + 0.5) / 10 - 0.5
+    xx = float(sx) + (np.arange(fine.shape[1]) + 0.5) / 10 - 0.5
+    np.testing.assert_allclose(
+        gy,
+        np.broadcast_to(
+            (2 * np.pi / 24 * np.cos(2 * np.pi * yy / 24))[:, None], fine.shape
+        ),
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        gx,
+        np.broadcast_to(
+            (-0.3 * 4 * np.pi / 24 * np.sin(4 * np.pi * xx / 24))[None, :], fine.shape
+        ),
+        atol=1e-12,
+    )
+
+
+@pytest.mark.parametrize("value,ratio", [(0.0, 0.5), (2.0, 1.0), (2.0, 1.1)])
+def test_truncation_peak_only_safeguard(value, ratio):
+    """When nothing exceeds threshold, every tied fine-grid peak survives."""
+    flux, area = truncation_core(np.full((5, 5), value), ratio, 0.25, half_width_pix=2)
+    assert float(area) == pytest.approx(25 * 0.25**2)
+    assert float(flux) == pytest.approx(25 * value)
+
+
+def test_shipped_truncation_stays_near_nominal_source(shipped_coro):
+    """The on-axis core excludes unrelated bright leakage outside its window."""
+    pos = next(_iter_xaxis_positions(shipped_coro))
+    with jax.enable_x64():
+        flux, _ = truncation_core(
+            jnp.asarray(pos.psf, dtype=jnp.float64),
+            0.3,
+            0.25,
+            nominal_center=(pos.py, pos.px),
+        )
+    assert float(flux) < 1e-8
+
+
+def test_nominal_search_preserves_fractional_pixel_position():
+    """Native offsets use the same unrounded coordinates as synthesized PSFs."""
+    coro = image_coro(airy_psf(0.25, 0.3, size=32), 0.25)
+    coro.offax.x_offsets = np.array([0.075]) * lod
+    coro.offax.center_y = 16.2 * u.pix
+    pos = next(_iter_xaxis_positions(coro))
+    assert pos.px == pytest.approx(16.3)
+    assert pos.py == pytest.approx(16.2)

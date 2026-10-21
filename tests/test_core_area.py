@@ -425,13 +425,14 @@ def test_core_inside_the_inner_working_angle_is_its_closed_form(
     assert np.abs(t_got / t_expected - 1.0).max() <= THROUGHPUT_TOL, t_got
 
 
-def quintic_spline_core(psf, pixel_lod, ratio, factor=10):
+def quintic_spline_core(psf, pixel_lod, ratio, factor=40):
     """Core (throughput, area) from a quintic spline of the PSF, not a DFT.
 
     The spline (scipy ``RectBivariateSpline``, degree 5 in each axis) is
     evaluated at subpixel centers over the window
     :func:`yippy.performance.truncation_core` uses, a reference built with a
-    different interpolant.
+    different interpolant. The 40x reference suppresses its own whole-cell
+    boundary error below the comparison tolerance.
     """
     from scipy.interpolate import RectBivariateSpline
 

@@ -151,12 +151,19 @@ When `psf_trunc_ratio` is set (e.g. `Coronagraph(path, psf_trunc_ratio=0.3)`),
 throughput and core area are computed using an adaptive aperture that includes
 all oversampled pixels exceeding `ratio * peak`. This matches AYO's
 `photap_frac` / `omega_lod` calculation and is recommended for ETC integration.
-Every counted core area and aperture throughput uses the PSF's band-limited
-(trigonometric) interpolant at 10 subpixels per pixel side, including fixed
-circular apertures. Circular throughput and raw contrast use a circle centered
-on the interpolated planet peak; stellar leakage uses that same circle. Flux
-is the sum of interpolated intensities times the subpixel area fraction, and
-area counts the included subpixel centers. Gaussian core-area fits remain fits.
+Core areas and aperture throughputs use the PSF's band-limited (trigonometric)
+interpolant at 10 subpixels per pixel side. Circular apertures use exact
+circle-square overlap fractions; truncation cores use fractional areas from
+the local level-set tangent, with gradients from the same DFT basis. Flux
+and area use the same weights. A circle fully inside the image has area
+`pi * radius**2`. Gaussian core-area fits remain fits.
+
+Peak searches stay within `PEAK_SEARCH_RADIUS_LOD = 1.0` lambda/D of the
+nominal source position, including for raw contrast. Stellar leakage uses
+that same planet-centered circle. Truncation measurements include only the
+local core window for in-image sources, preventing distant leakage speckles
+from setting the core below the IWA. Native offsets outside the image retain
+the global in-image truncation-core convention.
 
 By default the curves are tabulated only at the package's own non-negative
 off-axis offsets and interpolated between them. Passing
@@ -167,9 +174,9 @@ optics between shipped offsets.
 
 Band-limited reconstruction requires sampling at 0.5 lambda/D per pixel or
 finer. Coarser packages emit one `UserWarning` per `Coronagraph` and still
-compute. Finite-image boundaries and 10x boundary counting can also limit
-accuracy; 10x counting does not guarantee 0.1% agreement with a continuous
-aperture.
+compute. Fractional boundaries remove the lattice-point area error;
+intensity quadrature, level-set curvature, and finite-image boundaries still
+require oversampling convergence checks.
 
 ## Example data
 

@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 from synthetic_yip import write_synthetic_yip
+from test_band_limited_apertures import reference_circle_weights
 
 import yippy.coronagraph as coronagraph_module
 import yippy.performance as perf
@@ -237,7 +238,7 @@ def test_explicit_oversampling_does_not_feed_automatic_cache(tmp_path, monkeypat
 
 @pytest.mark.parametrize("mode", ["circle", "truncation", "setter"])
 def test_default_construction_measures_the_ten_subpixel_circle(tmp_path, mode):
-    """Constructor and setter contrast use the same counted circular aperture."""
+    """Constructor and setter contrast use the same fractional circular aperture."""
     package = write_synthetic_yip(tmp_path / "yip")
     coro = Coronagraph(
         package.path, psf_trunc_ratio=0.3 if mode == "truncation" else None
@@ -245,10 +246,12 @@ def test_default_construction_measures_the_ten_subpixel_circle(tmp_path, mode):
     if mode == "setter":
         coro.set_psf_trunc_ratio(0.5)
     sep = 3.0
-    # Sum of the analytic sigma=2-pixel Gaussian on a closed disk of radius
-    # 28 subpixels, centered on its brightest subpixel (0.05-pixel offset).
-    planet_flux = 0.622960946245892 * package.occulter(sep)
-    area_pixels = 24.53
+    # Independent circle-square quadrature of the analytic sigma=2 Gaussian.
+    rows, cols = np.mgrid[-29:29, -29:29] + 0.5
+    weights = reference_circle_weights(rows, cols, 28.0)
+    intensity = np.exp(-(rows**2 + cols**2) / (2 * 20**2)) / (2 * np.pi * 2**2)
+    planet_flux = (weights * intensity).sum() / 10**2 * package.occulter(sep)
+    area_pixels = np.pi * 2.8**2
     assert coro.raw_contrast(sep) == pytest.approx(
         package.stellar_level * area_pixels / planet_flux, rel=1e-5
     )
@@ -497,6 +500,27 @@ def test_legacy_circle_method_is_not_reused(tmp_path, trunc):
     identity["oversample"] = 2
     if trunc is not None:
         identity["core_step_lod"] = perf.CORE_STEP_LOD
+    save_coro_performance_to_fits(
+        np.array([0.0, 3.0, 6.0]),
+        np.full(3, 0.123),
+        np.full(3, 0.456),
+        obj._perf_filename(),
+        obj._perf_dir,
+        identity=identity,
+    )
+    warm = Coronagraph(path, psf_trunc_ratio=trunc)
+    for name, value in _metrics(warm).items():
+        assert_allclose(value, expected[name], rtol=RTOL, err_msg=name)
+
+
+@pytest.mark.parametrize("trunc", [None, 0.3])
+def test_center_counting_method_is_not_reused(tmp_path, trunc):
+    """A center-counting table cannot supply fractional, source-local curves."""
+    path = _yip(tmp_path, "warm")
+    obj = Coronagraph(path, psf_trunc_ratio=trunc)
+    expected = _metrics(obj)
+    identity = obj._auto_perf_identity()
+    identity["circle_method"] = "band_limited_float64_subpixel_centers"
     save_coro_performance_to_fits(
         np.array([0.0, 3.0, 6.0]),
         np.full(3, 0.123),

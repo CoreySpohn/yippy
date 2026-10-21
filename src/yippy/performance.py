@@ -55,8 +55,8 @@ class OffAxisPosition:
 
     separation: float  # |x| in lam/D
     psf: np.ndarray  # the off-axis PSF image
-    px: int  # pixel x position in the image
-    py: int  # pixel y position in the image
+    px: float  # nominal x position in the image, including subpixel phase
+    py: float  # nominal y position in the image, including subpixel phase
 
 
 # ---------------------------------------------------------------------------
@@ -89,10 +89,10 @@ def _iter_xaxis_positions(coro: Coronagraph):
             continue
         px = convert_to_pix(
             x_lod_val, coro.offax.center_x, coro.pixel_scale_arcsec
-        ).value.astype(int)
+        ).value
         py = convert_to_pix(
             y_lod_val, coro.offax.center_y, coro.pixel_scale_arcsec
-        ).value.astype(int)
+        ).value
         yield OffAxisPosition(separation=r, psf=planet_psf, px=px, py=py)
 
 
@@ -274,8 +274,9 @@ def compute_throughput_curve(
 
     Throughput is the fraction of the total flux (planet PSF normalized to 1)
     that lands inside a photometric aperture at each off-axis position.
-    The circle is centered on the peak of the band-limited interpolant and
-    summed at subpixel centers (:func:`circular_aperture`).
+    The circle is centered on the interpolated peak within
+    :data:`PEAK_SEARCH_RADIUS_LOD` of the nominal source. Boundary subpixels
+    carry exact circle-square overlap fractions (:func:`circular_aperture`).
 
     Args:
         coro: Coronagraph instance.
@@ -298,7 +299,13 @@ def compute_throughput_curve(
             radius_pix,
             coro.pixel_scale_arcsec.value,
             oversample=oversample,
-            half_width_pix=int(np.ceil(radius_pix)) + 2,
+            half_width_pix=int(
+                np.ceil(
+                    radius_pix + PEAK_SEARCH_RADIUS_LOD / coro.pixel_scale_arcsec.value
+                )
+            )
+            + 1,
+            nominal_center=(pos.py, pos.px),
         )
         separations.append(pos.separation)
         throughputs.append(float(flux))
@@ -315,8 +322,9 @@ def compute_raw_contrast_curve(
     """Compute raw contrast curve vs separation.
 
     Contrast is the ratio of stellar flux to planet flux within the same
-    circle centered on the planet's band-limited subpixel peak. Both images
-    use the identical subpixel coordinates and mask (:func:`circular_aperture`).
+    circle centered on the interpolated planet peak near its nominal
+    position. Both images use identical coordinates and fractional weights
+    (:func:`circular_aperture`).
 
     Args:
         coro: Coronagraph instance.
@@ -345,7 +353,13 @@ def compute_raw_contrast_curve(
             radius_pix,
             coro.pixel_scale_arcsec.value,
             oversample=oversample,
-            half_width_pix=int(np.ceil(radius_pix)) + 2,
+            half_width_pix=int(
+                np.ceil(
+                    radius_pix + PEAK_SEARCH_RADIUS_LOD / coro.pixel_scale_arcsec.value
+                )
+            )
+            + 1,
+            nominal_center=(pos.py, pos.px),
             star_psf=star_psf,
         )
         contrast_val = star_flux / planet_flux if planet_flux > 0 else np.inf
@@ -365,9 +379,9 @@ def compute_core_area_curve(
     """Compute core area vs separation.
 
     If *fit_gaussian* is True a 2-D Gaussian is fitted to each PSF; otherwise
-    the circular area counts subpixel centers inside the aperture on the
-    band-limited grid (:func:`circular_aperture`), clipped to the image.
-    Its continuum limit is ``pi * aperture_radius_lod**2``.
+    exact circle-square overlaps give ``pi * aperture_radius_lod**2`` when
+    the aperture fits inside the image (:func:`circular_aperture`). Apertures
+    crossing an image edge include only their in-image area.
 
     Args:
         coro: Coronagraph instance.
@@ -400,8 +414,9 @@ def compute_core_area_curve(
             radius_pix = aperture_radius_lod / coro.pixel_scale_arcsec.value * 3
             margin = int(np.ceil(radius_pix * 3))
             ny, nx = pos.psf.shape
-            xmin, xmax = max(0, pos.px - margin), min(nx - 1, pos.px + margin)
-            ymin, ymax = max(0, pos.py - margin), min(ny - 1, pos.py + margin)
+            px, py = int(pos.px), int(pos.py)
+            xmin, xmax = max(0, px - margin), min(nx - 1, px + margin)
+            ymin, ymax = max(0, py - margin), min(ny - 1, py + margin)
             subarr = np.asarray(pos.psf[ymin : ymax + 1, xmin : xmax + 1])
             sub_os = np.asarray(
                 resample_flux(
@@ -436,7 +451,14 @@ def compute_core_area_curve(
                 radius_pix,
                 coro.pixel_scale_arcsec.value,
                 oversample=oversample,
-                half_width_pix=int(np.ceil(radius_pix)) + 2,
+                half_width_pix=int(
+                    np.ceil(
+                        radius_pix
+                        + PEAK_SEARCH_RADIUS_LOD / coro.pixel_scale_arcsec.value
+                    )
+                )
+                + 1,
+                nominal_center=(pos.py, pos.px),
             )
             area = float(area)
 
@@ -444,6 +466,10 @@ def compute_core_area_curve(
         core_areas.append(area)
 
     return _collect_and_sort(separations, core_areas)
+
+
+PEAK_SEARCH_RADIUS_LOD = 1.0
+"""Radius about the nominal source used to locate its peak, in lambda/D."""
 
 
 CORE_WINDOW_LOD = 3.0
@@ -468,11 +494,18 @@ def _band_limited_samples(spectrum, start, n_pix, oversample):
     return jnp.exp(2j * jnp.pi * coords[:, None] * freqs[None, :]) / size
 
 
-@functools.partial(jax.jit, static_argnames=("oversample", "half_width_pix"))
+@functools.partial(
+    jax.jit, static_argnames=("oversample", "half_width_pix", "return_gradient")
+)
 def core_subpixel_window(
-    psf, oversample: int = CORE_OVERSAMPLE, half_width_pix: int = 12
+    psf,
+    oversample: int = CORE_OVERSAMPLE,
+    half_width_pix: int = 12,
+    nominal_center=None,
+    search_radius_pix=None,
+    return_gradient=False,
 ):
-    """The PSF's band-limited interpolant on subpixels about its brightest pixel.
+    """The PSF's band-limited interpolant on subpixels about the source peak.
 
     The window is ``2 * half_width_pix + 1`` pixels on a side (clipped to the
     image) about the brightest pixel, and each pixel is split into
@@ -485,26 +518,202 @@ def core_subpixel_window(
         psf: 2-D PSF image.
         oversample: Subpixels per pixel side.
         half_width_pix: Half-width in pixels of the window.
+        nominal_center: Optional source (row, column) in original pixels.
+        search_radius_pix: Peak-search radius about ``nominal_center``.
+        return_gradient: Also return the two spectral derivatives, in
+            intensity per original pixel coordinate.
 
     Returns:
         ``(fine, start_y, start_x)``: the subpixel image, and the row and
-        column of the window's first pixel in ``psf``.
+        column of the window's first pixel in ``psf``. With
+        ``return_gradient=True``, append ``grad_y, grad_x``.
     """
     ny, nx = psf.shape
     n_y = min(2 * half_width_pix + 1, ny)
     n_x = min(2 * half_width_pix + 1, nx)
-    row, col = jnp.unravel_index(jnp.argmax(psf), psf.shape)
+    row, col = _peak_index(psf, nominal_center, search_radius_pix)
+
     start_y = jnp.clip(row - half_width_pix, 0, ny - n_y)
     start_x = jnp.clip(col - half_width_pix, 0, nx - n_x)
     spectrum = jnp.fft.fft2(psf)
     basis_y = _band_limited_samples(spectrum, start_y, n_y, oversample)
     basis_x = _band_limited_samples(spectrum.T, start_x, n_x, oversample)
     fine = jnp.real(basis_y @ spectrum @ basis_x.T)
+    if return_gradient:
+        grad_y = jnp.real(
+            (basis_y * (2j * jnp.pi * jnp.fft.fftfreq(ny))) @ spectrum @ basis_x.T
+        )
+        grad_x = jnp.real(
+            basis_y @ spectrum @ (basis_x * (2j * jnp.pi * jnp.fft.fftfreq(nx))).T
+        )
+        return fine, start_y, start_x, grad_y, grad_x
     return fine, start_y, start_x
 
 
+def _peak_index(image, nominal_center=None, search_radius_pix=None):
+    """Locate the brightest sample within the nominal source's search disk."""
+    if nominal_center is None:
+        return jnp.unravel_index(jnp.argmax(image), image.shape)
+    rows = jnp.arange(image.shape[0])[:, None] - nominal_center[0]
+    cols = jnp.arange(image.shape[1])[None, :] - nominal_center[1]
+    inside = rows**2 + cols**2 <= search_radius_pix**2
+    # Native offsets beyond the image retain the global, in-image core.
+    valid = (
+        (nominal_center[0] >= 0)
+        & (nominal_center[0] < image.shape[0])
+        & (nominal_center[1] >= 0)
+        & (nominal_center[1] < image.shape[1])
+    )
+    candidates = jnp.where(inside | ~valid, image, -jnp.inf)
+    return jnp.unravel_index(jnp.argmax(candidates), image.shape)
+
+
+def _window_peak(fine, start_y, start_x, oversample, nominal_center, search_radius_pix):
+    """Peak sample in a window, restricted in global pixel coordinates."""
+    center = (
+        None
+        if nominal_center is None
+        else (
+            (nominal_center[0] - start_y + 0.5) * oversample - 0.5,
+            (nominal_center[1] - start_x + 0.5) * oversample - 0.5,
+        )
+    )
+    row, col = _peak_index(fine, center, search_radius_pix * oversample)
+    return jnp.array(
+        [
+            start_y + (row + 0.5) / oversample - 0.5,
+            start_x + (col + 0.5) / oversample - 0.5,
+        ]
+    )
+
+
+def _refine_peak(psf, center, oversample, nominal_center=None, search_radius_pix=None):
+    """Refine an interior maximum using derivatives of the same DFT basis.
+
+    Interior Newton steps require a negative-definite Hessian and stay
+    within one subpixel of the initial sample. Near the search-disk boundary,
+    also optimize along its circumference; flat maxima stay put.
+    """
+    spectrum = jnp.fft.fft2(psf)
+    fy = 2j * jnp.pi * jnp.fft.fftfreq(psf.shape[0])
+    fx = 2j * jnp.pi * jnp.fft.fftfreq(psf.shape[1])
+
+    def evaluate(point):
+        modes = (
+            jnp.exp(fy * point[0])[:, None]
+            * spectrum
+            * jnp.exp(fx * point[1])[None, :]
+            / psf.size
+        )
+        value = jnp.real(jnp.sum(modes))
+        gy = jnp.real(jnp.sum(modes * fy[:, None]))
+        gx = jnp.real(jnp.sum(modes * fx[None, :]))
+        yy = jnp.real(jnp.sum(modes * fy[:, None] ** 2))
+        xx = jnp.real(jnp.sum(modes * fx[None, :] ** 2))
+        yx = jnp.real(jnp.sum(modes * fy[:, None] * fx[None, :]))
+        det = yy * xx - yx**2
+        safe_det = jnp.where(det > 0, det, 1.0)
+        step = jnp.array([xx * gy - yx * gx, yy * gx - yx * gy]) / safe_det
+        return (
+            value,
+            step,
+            (yy < 0) & (det > 0),
+            jnp.array([gy, gx]),
+            jnp.array([[yy, yx], [yx, xx]]),
+        )
+
+    def refine(_, point):
+        _, step, maximum, _, _ = evaluate(point)
+        candidate = point - step
+        accept = maximum & jnp.all(jnp.abs(candidate - center) <= 1 / oversample)
+        return jnp.where(accept, candidate, point)
+
+    point = jax.lax.fori_loop(0, 3, refine, center)
+    if nominal_center is not None:
+        nominal = jnp.asarray(nominal_center)
+        in_image = jnp.all(nominal >= 0) & jnp.all(nominal < jnp.array(psf.shape))
+        distance = jnp.linalg.norm(center - nominal)
+        inside = jnp.linalg.norm(point - nominal) <= search_radius_pix
+        point = jnp.where(in_image & ~inside, center, point)
+
+        def boundary_peak(point):
+            def on_circle(angle):
+                return nominal + search_radius_pix * jnp.array(
+                    [jnp.sin(angle), jnp.cos(angle)]
+                )
+
+            def refine_angle(_, angle):
+                candidate = on_circle(angle)
+                _, _, _, gradient, hessian = evaluate(candidate)
+                radial = candidate - nominal
+                tangent = jnp.array([radial[1], -radial[0]])
+                first = gradient @ tangent
+                second = tangent @ hessian @ tangent - gradient @ radial
+                step = first / jnp.where(second < 0, second, 1.0)
+                return angle - jnp.where(second < 0, jnp.clip(step, -0.2, 0.2), 0.0)
+
+            delta = center - nominal
+            angle = jnp.arctan2(delta[0], delta[1])
+            angle = jax.lax.fori_loop(0, 5, refine_angle, angle)
+            candidate = on_circle(angle)
+            valid = jnp.all(candidate >= -0.5) & jnp.all(
+                candidate <= jnp.array(psf.shape) - 0.5
+            )
+            better = evaluate(candidate)[0] > evaluate(point)[0]
+            return jnp.where(valid & better, candidate, point)
+
+        point = jax.lax.cond(
+            in_image & (distance >= search_radius_pix - 2 / oversample),
+            boundary_peak,
+            lambda p: p,
+            point,
+        )
+    return point, evaluate(point)[0]
+
+
+def _circle_square_weights(rows, cols, radius):
+    """Exact disk overlap of unit squares centered at rows and cols.
+
+    Integrate sqrt(radius**2 - x**2) analytically in each quadrant,
+    then difference its rectangle primitive at the four square corners.
+    """
+
+    def primitive(x, y):
+        a = jnp.minimum(jnp.abs(x), radius)
+        b = jnp.minimum(jnp.abs(y), radius)
+        split = jnp.minimum(a, jnp.sqrt(jnp.maximum(radius**2 - b**2, 0.0)))
+
+        def integral(z):
+            return 0.5 * (
+                z * jnp.sqrt(jnp.maximum(radius**2 - z**2, 0.0))
+                + radius**2 * jnp.arcsin(jnp.clip(z / radius, 0, 1))
+            )
+
+        return jnp.sign(x) * jnp.sign(y) * (b * split + integral(a) - integral(split))
+
+    fraction = (
+        primitive(cols + 0.5, rows + 0.5)
+        - primitive(cols - 0.5, rows + 0.5)
+        - primitive(cols + 0.5, rows - 0.5)
+        + primitive(cols - 0.5, rows - 0.5)
+    )
+    inner = (jnp.abs(rows) + 0.5) ** 2 + (jnp.abs(cols) + 0.5) ** 2 <= radius**2
+    outer = (
+        jnp.maximum(jnp.abs(rows) - 0.5, 0) ** 2
+        + jnp.maximum(jnp.abs(cols) - 0.5, 0) ** 2
+        >= radius**2
+    )
+    return jnp.where(inner, 1.0, jnp.where(outer, 0.0, jnp.clip(fraction, 0, 1)))
+
+
 def _measure_circular_aperture(
-    psf, radius_pix, pixel_scale_lod, oversample, half_width_pix, star_psf=None
+    psf,
+    radius_pix,
+    pixel_scale_lod,
+    oversample,
+    half_width_pix,
+    star_psf=None,
+    nominal_center=None,
 ):
     """Host measurement boundary using float64 to resolve faint stellar leakage."""
     with jax.enable_x64():
@@ -514,6 +723,7 @@ def _measure_circular_aperture(
             pixel_scale_lod,
             oversample=oversample,
             half_width_pix=half_width_pix,
+            nominal_center=nominal_center,
             star_psf=None
             if star_psf is None
             else jnp.asarray(star_psf, dtype=jnp.float64),
@@ -529,19 +739,22 @@ def circular_aperture(
     oversample: int = CORE_OVERSAMPLE,
     half_width_pix: int = 12,
     star_psf=None,
+    nominal_center=None,
 ):
-    """Flux and counted area of a circle on the PSF's trigonometric interpolant.
+    """Flux and exact area of a circle on the PSF's trigonometric interpolant.
 
-    The circle is centered on the brightest subpixel of the band-limited
-    window. Subpixel centers at or inside ``radius_pix`` count, with intensity
-    multiplied by ``1 / oversample**2`` for flux and the subpixel solid angle
-    for area. No flux renormalization or clipping of interpolated intensity
-    is applied. A flat image therefore gives exactly the counted circle area.
+    Each subpixel carries its exact area fraction inside ``radius_pix``.
+    Flux is the sum of these weights times the interpolated center intensity,
+    divided by ``oversample**2``; area is their sum times the subpixel solid
+    angle. The circle is centered on the refined interpolated peak. An optional
+    ``nominal_center=(row, column)`` restricts the peak search to a disk of
+    radius :data:`PEAK_SEARCH_RADIUS_LOD` in lambda/D about the source.
+    No flux renormalization or intensity clipping is applied.
 
     The window must contain the circle plus a margin for locating the peak;
     it is clipped to the image as in :func:`core_subpixel_window`. When
     ``star_psf`` is supplied, its interpolant is measured at the same global
-    coordinates through the same mask, rather than at the stellar peak.
+    coordinates through the same weights as the planet.
     Sampling at 0.5 lambda/D per pixel or finer is required for an unaliased
     reconstruction; finite-image periodic boundaries can still affect edges.
     This kernel uses the active JAX precision and supports ``jit`` and
@@ -551,16 +764,28 @@ def circular_aperture(
     Returns:
         ``(planet_flux, area, star_flux)``; ``star_flux`` is zero when omitted.
     """
-    fine, start_y, start_x = core_subpixel_window(psf, oversample, half_width_pix)
-    row, col = jnp.unravel_index(jnp.argmax(fine), fine.shape)
-    rows = jnp.arange(fine.shape[0])[:, None] - row
-    cols = jnp.arange(fine.shape[1])[None, :] - col
-    radius_squared = (radius_pix * oversample) ** 2
-    # Include boundary centers when floating-point multiplication rounds the
-    # squared radius just below an integer squared distance.
-    radius_squared = jnp.nextafter(radius_squared, jnp.inf)
-    circle = rows**2 + cols**2 <= radius_squared
-    flux = jnp.sum(jnp.where(circle, fine, 0.0)) / oversample**2
+    search_radius = PEAK_SEARCH_RADIUS_LOD / pixel_scale_lod
+    fine, start_y, start_x = core_subpixel_window(
+        psf, oversample, half_width_pix, nominal_center, search_radius
+    )
+    center = _window_peak(
+        fine, start_y, start_x, oversample, nominal_center, search_radius
+    )
+    refined, _ = _refine_peak(psf, center, oversample, nominal_center, search_radius)
+    rows = (
+        start_y
+        + (jnp.arange(fine.shape[0])[:, None] + 0.5) / oversample
+        - 0.5
+        - refined[0]
+    ) * oversample
+    cols = (
+        start_x
+        + (jnp.arange(fine.shape[1])[None, :] + 0.5) / oversample
+        - 0.5
+        - refined[1]
+    ) * oversample
+    circle = _circle_square_weights(rows, cols, radius_pix * oversample)
+    flux = jnp.sum(circle * fine) / oversample**2
     area = jnp.sum(circle) * (pixel_scale_lod / oversample) ** 2
     star_flux = 0.0
     if star_psf is not None:
@@ -572,7 +797,7 @@ def circular_aperture(
             spectrum.T, start_x, fine.shape[1] // oversample, oversample
         )
         star_fine = jnp.real(basis_y @ spectrum @ basis_x.T)
-        star_flux = jnp.sum(jnp.where(circle, star_fine, 0.0)) / oversample**2
+        star_flux = jnp.sum(circle * star_fine) / oversample**2
     return flux, area, star_flux
 
 
@@ -583,32 +808,31 @@ def truncation_core(
     pixel_scale_lod,
     oversample: int = CORE_OVERSAMPLE,
     half_width_pix: int = 12,
+    nominal_center=None,
 ):
     """Throughput and area of the region where a PSF exceeds a fraction of its peak.
 
-    The PSF is evaluated at the centers of ``oversample`` x ``oversample``
-    subpixels per pixel over a window of ``2 * half_width_pix + 1`` pixels
-    about its brightest pixel. The core is the set of subpixels above
-    ``psf_trunc_ratio`` times the brightest subpixel: its area is their
-    number times the subpixel solid angle, and its throughput is the sum of
-    their values, each the PSF's flux per pixel at that point, divided by
-    ``oversample**2``. A PSF with no positive pixel gives the window.
+    A subpixel's weight is the exact square fraction on the bright side of
+    the tangent to the level set at its center. Both the intensity and its
+    gradient come from the same trigonometric interpolant (derivatives of
+    the DFT basis). Area and throughput use the same weights. This local
+    linear boundary approximation is second order in subpixel width.
 
-    Pixels outside the window that exceed the threshold are counted whole.
-    Only a PSF without a single compact core, such as one inside the inner
-    working angle, has any.
+    The threshold is ``psf_trunc_ratio`` times the refined interpolated peak.
+    If no subpixel exceeds it, the original ``fine == fine.max()`` safeguard
+    selects all tied peak samples, including the whole window for a zero PSF.
 
-    The subpixel values are the PSF's band-limited (trigonometric)
-    interpolant (:func:`core_subpixel_window`). An
-    intensity PSF sampled at lambda/(2D) or finer is determined by its
-    samples, and yippy synthesizes off-axis PSFs between tabulated offsets
-    with Fourier shifts of the same kind. A local cubic kernel, by contrast,
-    flattens the core and overstates the area by up to about one percent at
-    0.25 lambda/D sampling. Counting whole pixels, even twice-oversampled
-    ones, puts the area on a coarse lattice that moves by several percent
-    with the source's subpixel position. Ten subpixels per side reduce this
-    lattice error, but do not guarantee a fixed relative accuracy; the Airy
-    half-maximum area can still differ from its continuum value by 0.71%.
+    With an in-image ``nominal_center``, the peak search stays within
+    :data:`PEAK_SEARCH_RADIUS_LOD` of that position and only the local core
+    window contributes. This excludes unrelated leakage elsewhere inside the
+    IWA. Without a nominal position, or for a native offset outside the image,
+    retain the global peak and add above-threshold original pixels outside
+    the window, preserving the in-image-power convention for these offsets.
+
+    An intensity PSF sampled at 0.5 lambda/D per pixel or finer supports
+    band-limited reconstruction. The default ten subpixels per side resolve
+    the tested Airy boundaries to 0.1%; finite-image interpolation and more
+    complicated level sets still require convergence checks.
 
     The shapes are fixed by the static arguments, so the function is
     ``jit``-compiled once and can be ``vmap``-ped over a stack of PSFs.
@@ -620,16 +844,46 @@ def truncation_core(
         oversample: Subpixels per pixel side.
         half_width_pix: Half-width in pixels of the subpixel window, clipped
             to the image.
+        nominal_center: Optional source (row, column) in original pixels.
 
     Returns:
         ``(throughput, area)``: the core throughput in the PSF's flux units
         and the core area in (lambda/D)^2.
     """
     ny, nx = psf.shape
-    fine, start_y, start_x = core_subpixel_window(psf, oversample, half_width_pix)
+    search_radius = PEAK_SEARCH_RADIUS_LOD / pixel_scale_lod
+    fine, start_y, start_x, grad_y, grad_x = core_subpixel_window(
+        psf,
+        oversample,
+        half_width_pix,
+        nominal_center,
+        search_radius,
+        return_gradient=True,
+    )
     n_y, n_x = fine.shape[0] // oversample, fine.shape[1] // oversample
-    peak = jnp.max(fine)
-    core = (fine > psf_trunc_ratio * peak) | (fine == peak)
+    center = _window_peak(
+        fine, start_y, start_x, oversample, nominal_center, search_radius
+    )
+    _, peak = _refine_peak(psf, center, oversample, nominal_center, search_radius)
+    threshold = psf_trunc_ratio * peak
+    # Exact area under the local tangent line in a square. The sum of two
+    # independent uniforms has a trapezoidal CDF; this also handles an
+    # axis-aligned normal without dividing by its vanishing component.
+    a = jnp.maximum(jnp.abs(grad_y), jnp.abs(grad_x)) / oversample
+    b = jnp.minimum(jnp.abs(grad_y), jnp.abs(grad_x)) / oversample
+    z = jnp.abs(fine - threshold)
+    safe_a = jnp.where(a > 0, a, 1.0)
+    safe_b = jnp.where(b > 0, b, 1.0)
+    tail = jnp.where(
+        z <= (a - b) / 2,
+        0.5 - z / safe_a,
+        jnp.maximum((a + b) / 2 - z, 0) ** 2 / (2 * safe_a * safe_b),
+    )
+    core = jnp.where(fine >= threshold, 1 - tail, tail)
+    core = jnp.where(a > 0, core, (fine > threshold).astype(fine.dtype))
+    core = jnp.where(
+        jnp.any(fine > threshold), core, (fine == jnp.max(fine)).astype(fine.dtype)
+    )
     rows = jnp.arange(ny)[:, None]
     cols = jnp.arange(nx)[None, :]
     in_window = (
@@ -639,7 +893,15 @@ def truncation_core(
         & (cols < start_x + n_x)
     )
     outside = (psf > psf_trunc_ratio * peak) & ~in_window
-    throughput = jnp.sum(jnp.where(core, fine, 0.0)) / oversample**2 + jnp.sum(
+    if nominal_center is not None:
+        in_image = (
+            (nominal_center[0] >= 0)
+            & (nominal_center[0] < ny)
+            & (nominal_center[1] >= 0)
+            & (nominal_center[1] < nx)
+        )
+        outside = outside & ~in_image
+    throughput = jnp.sum(core * fine) / oversample**2 + jnp.sum(
         jnp.where(outside, psf, 0.0)
     )
     area = (
@@ -739,16 +1001,17 @@ def compute_truncation_curves(
     half_width = core_window_half_width_pix(pix_lod)
     oversample = CORE_OVERSAMPLE if oversample is None else int(oversample)
 
-    def cores_of(psfs):
+    def cores_of(psfs, centers):
         throughputs, areas = jax.vmap(
-            lambda psf: truncation_core(
+            lambda psf, center: truncation_core(
                 psf,
                 psf_trunc_ratio,
                 pix_lod,
                 oversample=oversample,
                 half_width_pix=half_width,
+                nominal_center=center,
             )
-        )(jnp.asarray(psfs))
+        )(jnp.asarray(psfs, dtype=jnp.float64), jnp.asarray(centers))
         return np.column_stack([np.asarray(throughputs), np.asarray(areas)])
 
     separations, cores = [], []
@@ -762,12 +1025,34 @@ def compute_truncation_curves(
             padded = jnp.asarray(np.pad(chunk, (0, _PSF_BATCH - len(chunk)), "edge"))
             psfs = coro.offax.create_psfs(padded, jnp.full_like(padded, y0))
             separations.extend(chunk.tolist())
-            cores.append(cores_of(psfs)[: len(chunk)])
+            centers = np.column_stack(
+                [
+                    np.full(
+                        len(padded),
+                        convert_to_pix(
+                            y0 * lod, coro.offax.center_y, coro.pixel_scale_arcsec
+                        ).value,
+                    ),
+                    convert_to_pix(
+                        np.asarray(padded) * lod,
+                        coro.offax.center_x,
+                        coro.pixel_scale_arcsec,
+                    ).value,
+                ]
+            )
+            with jax.enable_x64():
+                cores.append(cores_of(psfs, centers)[: len(chunk)])
         positions = [pos for pos in positions if pos.separation > grid[-1]]
 
     if positions:
         separations.extend(pos.separation for pos in positions)
-        cores.append(cores_of(np.stack([pos.psf for pos in positions])))
+        with jax.enable_x64():
+            cores.append(
+                cores_of(
+                    np.stack([pos.psf for pos in positions]),
+                    np.array([(pos.py, pos.px) for pos in positions]),
+                )
+            )
 
     cores = np.concatenate(cores)
     order = np.argsort(separations)
