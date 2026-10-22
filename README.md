@@ -41,16 +41,17 @@ coro = Coronagraph("path/to/eac1_aavc_2d")
 
 # Off-axis PSF at a given (x, y) position
 from lod_unit import lod
+
 offaxis_psf = coro.offax(2 * lod, 5 * lod)
 
 # Performance metrics at any separation
-throughput = coro.throughput(5.0)        # scalar or array
-contrast   = coro.raw_contrast(5.0)
-occ_trans  = coro.occulter_transmission(5.0)
+throughput = coro.throughput(5.0)  # scalar or array
+contrast = coro.raw_contrast(5.0)
+occ_trans = coro.occulter_transmission(5.0)
 
 # 2D performance maps (pixel grids)
 throughput_map = coro.throughput_map()
-core_area_map  = coro.core_area_map()
+core_area_map = coro.core_area_map()
 ```
 
 If you don't have a YIP on hand, see [Example data](#example-data-beta)
@@ -87,8 +88,8 @@ coro.core_area(5.0)
 coro.core_mean_intensity(5.0)
 
 # Noise floors
-coro.noise_floor_exosims(5.0)           # |raw_contrast| / ppf
-coro.noise_floor_ayo(5.0, ppf=30.0)     # core_mean_intensity / ppf
+coro.noise_floor_exosims(5.0)  # |raw_contrast| / ppf
+coro.noise_floor_ayo(5.0, ppf=30.0)  # core_mean_intensity / ppf
 
 # 2D maps (full pixel grids)
 coro.separation_map()
@@ -113,6 +114,7 @@ import equinox as eqx
 # Create from a YIP path directly
 coro = EqxCoronagraph("path/to/yip")
 
+
 # All methods are JIT-traceable
 @eqx.filter_jit
 def simulate(coro, x, y):
@@ -134,13 +136,13 @@ from yippy.performance import (
     compute_core_area_curve,
     compute_occ_trans_curve,
     compute_core_mean_intensity_curve,
-    compute_truncation_throughput_curve,     # PSF truncation-ratio aperture
+    compute_truncation_throughput_curve,  # PSF truncation-ratio aperture
     compute_truncation_core_area_curve,
 )
 
 # Compute individual curves
 separations, throughputs = compute_throughput_curve(coro)
-separations, contrasts  = compute_raw_contrast_curve(coro)
+separations, contrasts = compute_raw_contrast_curve(coro)
 ```
 
 ### PSF Truncation Ratio
@@ -149,6 +151,32 @@ When `psf_trunc_ratio` is set (e.g. `Coronagraph(path, psf_trunc_ratio=0.3)`),
 throughput and core area are computed using an adaptive aperture that includes
 all oversampled pixels exceeding `ratio * peak`. This matches AYO's
 `photap_frac` / `omega_lod` calculation and is recommended for ETC integration.
+Core areas and aperture throughputs use the PSF's band-limited (trigonometric)
+interpolant at 10 subpixels per pixel side. Circular apertures use exact
+circle-square overlap fractions; truncation cores use fractional areas from
+the local level-set tangent, with gradients from the same DFT basis. Flux
+and area use the same weights. A circle fully inside the image has area
+`pi * radius**2`. Gaussian core-area fits remain fits.
+
+Peak searches stay within `PEAK_SEARCH_RADIUS_LOD = 1.0` lambda/D of the
+nominal source position, including for raw contrast. Stellar leakage uses
+that same planet-centered circle. Truncation measurements include only the
+local core window for in-image sources, preventing distant leakage speckles
+from setting the core below the IWA. Native offsets outside the image retain
+the global in-image truncation-core convention.
+
+By default the curves are tabulated only at the package's own non-negative
+off-axis offsets and interpolated between them. Passing
+`separation_step_lod=CORE_STEP_LOD` to `compute_truncation_curves` or
+`compute_all_performance_curves` opts into a 0.25 lambda/D grid of synthesized
+PSFs as well. A YIP alone cannot establish whether blended PSFs reproduce the
+optics between shipped offsets.
+
+Band-limited reconstruction requires sampling at 0.5 lambda/D per pixel or
+finer. Coarser packages emit one `UserWarning` per `Coronagraph` and still
+compute. Fractional boundaries remove the lattice-point area error;
+intensity quadrature, level-set curvature, and finite-image boundaries still
+require oversampling convergence checks.
 
 ## Example data
 
@@ -159,8 +187,8 @@ want to try it" exploration:
 ```python
 from yippy import Coronagraph, fetch_yip
 
-yip_path = fetch_yip("eac1_aavc_2d")   # download (cached after first call)
-coro     = Coronagraph(yip_path)
+yip_path = fetch_yip("eac1_aavc_2d")  # download (cached after first call)
+coro = Coronagraph(yip_path)
 ```
 
 The catalog is currently minimal. Long-term YIP hosting will be provided
@@ -201,6 +229,7 @@ yip_path = fetch_yip("eac1_aavc_2d", cache_path="/data/shared/yips")
 
 # Introspect the resolved cache directory without triggering a fetch
 from yippy import cache_dir
+
 print(cache_dir())
 ```
 
@@ -214,10 +243,12 @@ coronagraph:
 
 ```python
 import jax
+
 jax.config.update("jax_enable_x64", True)  # or set JAX_ENABLE_X64=1 in the env
 
 from yippy import Coronagraph, EqxCoronagraph
-coro = EqxCoronagraph("/path/to/yip")       # now all arrays are float64
+
+coro = EqxCoronagraph("/path/to/yip")  # now all arrays are float64
 ```
 
 There is no per-object dtype option: precision is one global switch, so the
@@ -235,6 +266,7 @@ input package), angular separation (angle units), or apparent separation
 
 ```python
 import astropy.units as u
+
 # pixels
 x_pos = 2 * u.pix
 y_pos = 5 * u.pix
@@ -247,7 +279,9 @@ offaxis_psf = coro.offax(x_pos, y_pos, lam=wavelength, D=telescope_diameter)
 
 # apparent separation
 star_dist = 10 * u.pc
-offaxis_psf = coro.offax(x_pos, y_pos, lam=wavelength, D=telescope_diameter, dist=star_dist)
+offaxis_psf = coro.offax(
+    x_pos, y_pos, lam=wavelength, D=telescope_diameter, dist=star_dist
+)
 ```
 
 ## JAX
@@ -261,8 +295,8 @@ if you need 64-bit precision, configure it
 # At the very top of your script
 from hwoutils import enable_x64, set_platform
 
-enable_x64()           # switch to float64
-set_platform("cpu")    # or "gpu", "gpu,cpu" for fallback
+enable_x64()  # switch to float64
+set_platform("cpu")  # or "gpu", "gpu,cpu" for fallback
 
 # Now it's safe to import yippy
 from yippy import Coronagraph

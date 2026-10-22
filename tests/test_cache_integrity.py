@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 from numpy.testing import assert_allclose
 from synthetic_yip import write_synthetic_yip
+from test_band_limited_apertures import reference_circle_weights
 
 import yippy.coronagraph as coronagraph_module
 import yippy.performance as perf
@@ -67,7 +68,7 @@ def _forbid_persisted_computation(monkeypatch):
 
     for name in (
         "compute_throughput_curve",
-        "compute_truncation_throughput_curve",
+        "compute_truncation_curves",
         "compute_raw_contrast_curve",
     ):
         _patch_everywhere(monkeypatch, name, fail)
@@ -105,6 +106,31 @@ def test_constructor_then_setter_matches_cold(tmp_path):
     warm.set_psf_trunc_ratio(0.3)
     cold = Coronagraph(_yip(tmp_path, "cold"), psf_trunc_ratio=0.3)
     _assert_same_metrics(warm, cold)
+
+
+def test_truncation_core_is_read_from_the_cache(tmp_path, monkeypatch, caplog):
+    """A cache hit in truncation mode recomputes nothing and warns of nothing."""
+    path = _yip(tmp_path, "warm")
+    cold = Coronagraph(path, psf_trunc_ratio=0.3)
+    _forbid_persisted_computation(monkeypatch)
+    with caplog.at_level("WARNING", logger="yippy"):
+        warm = Coronagraph(path, psf_trunc_ratio=0.3)
+    assert not any("not checked" in r.getMessage() for r in caplog.records)
+    _assert_same_metrics(warm, cold)
+
+
+def test_explicit_import_in_truncation_mode_warns(tmp_path, caplog):
+    """Importing a table with a truncation ratio says its ratio is unchecked."""
+    path = _yip(tmp_path, "warm")
+    coro = Coronagraph(path, psf_trunc_ratio=0.3)
+    with caplog.at_level("WARNING", logger="yippy"):
+        coro.compute_all_performance_curves(
+            save_to_fits=False,
+            load_from_file=coro._perf_filename(),
+            cache_dir=coro._perf_dir,
+            psf_trunc_ratio=0.3,
+        )
+    assert any("not checked" in r.getMessage() for r in caplog.records)
 
 
 def test_setter_does_not_persist_contrast_floor(tmp_path):
@@ -147,9 +173,8 @@ def test_truncation_cache_distinguishes_contrast_aperture(tmp_path):
 def test_fine_radius_difference_does_not_alias(tmp_path):
     """Radii 0.706 and 0.708 share a two-decimal token but not an aperture.
 
-    At the default oversampling the aperture radius is ``8 r`` oversampled
-    pixels and a pixel lies at distance ``sqrt(32) = 5.657`` from the peak, so
-    that pixel is outside the 0.706 aperture (5.648) and inside 0.708 (5.664).
+    At ten subpixels per pixel, these radii select different boundary cells
+    even though their rounded two-decimal filename tokens would coincide.
     """
     path = _yip(tmp_path, "warm")
     first = Coronagraph(path, aperture_radius_lod=0.706)
@@ -202,7 +227,7 @@ def test_explicit_oversampling_does_not_feed_automatic_cache(tmp_path, monkeypat
 
     obj.compute_all_performance_curves(
         aperture_radius_lod=0.7,
-        oversample=2,
+        oversample=10,
         save_to_fits=True,
         performance_file=obj._perf_filename(),
         cache_dir=obj._perf_dir,
@@ -211,29 +236,28 @@ def test_explicit_oversampling_does_not_feed_automatic_cache(tmp_path, monkeypat
     _assert_same_metrics(Coronagraph(path), cold)
 
 
-def test_default_construction_uses_oversample_two(tmp_path, monkeypatch):
-    """The cold constructor keeps its oversampling factor of 2 in both modes."""
-    seen = []
-    for name in (
-        "compute_throughput_curve",
-        "compute_truncation_throughput_curve",
-        "compute_truncation_core_area_curve",
-        "compute_raw_contrast_curve",
-    ):
-        original = getattr(perf, name)
-
-        def spy(*args, _original=original, _name=name, **kwargs):
-            seen.append((_name, kwargs.get("oversample")))
-            return _original(*args, **kwargs)
-
-        _patch_everywhere(monkeypatch, name, spy)
-    path = _yip(tmp_path, "yip")
-    Coronagraph(path)
-    Coronagraph(path, psf_trunc_ratio=0.3)
-    coro = Coronagraph(_yip(tmp_path, "setter"))
-    coro.set_psf_trunc_ratio(0.5)
-    assert seen, "no calculation observed"
-    assert all(factor == 2 for _, factor in seen), seen
+@pytest.mark.parametrize("mode", ["circle", "truncation", "setter"])
+def test_default_construction_measures_the_ten_subpixel_circle(tmp_path, mode):
+    """Constructor and setter contrast use the same fractional circular aperture."""
+    package = write_synthetic_yip(tmp_path / "yip")
+    coro = Coronagraph(
+        package.path, psf_trunc_ratio=0.3 if mode == "truncation" else None
+    )
+    if mode == "setter":
+        coro.set_psf_trunc_ratio(0.5)
+    sep = 3.0
+    # Independent circle-square quadrature of the analytic sigma=2 Gaussian.
+    rows, cols = np.mgrid[-29:29, -29:29] + 0.5
+    weights = reference_circle_weights(rows, cols, 28.0)
+    intensity = np.exp(-(rows**2 + cols**2) / (2 * 20**2)) / (2 * np.pi * 2**2)
+    planet_flux = (weights * intensity).sum() / 10**2 * package.occulter(sep)
+    area_pixels = np.pi * 2.8**2
+    assert coro.raw_contrast(sep) == pytest.approx(
+        package.stellar_level * area_pixels / planet_flux, rel=1e-5
+    )
+    if mode == "circle":
+        assert coro.throughput(sep) == pytest.approx(planet_flux, rel=1e-5)
+        assert coro.core_area(sep) == pytest.approx(area_pixels * package.pixscale**2)
 
 
 # ---------------------------------------------------------------------------
@@ -446,3 +470,65 @@ def test_stale_object_does_not_label_cube_as_new_source(tmp_path):
     warm = Coronagraph(path)
     cold = Coronagraph(_small_2dq(tmp_path, "cold", psf_flux=0.5))
     _assert_same_cube(warm, cold)
+
+
+def test_synthesized_core_cache_does_not_feed_default_curves(tmp_path):
+    """Opt-in synthesized core tables cannot masquerade as native-offset tables."""
+    path = _yip(tmp_path, "warm", offset_step_lod=2.0)
+    obj = Coronagraph(path, psf_trunc_ratio=0.5)
+    expected = _metrics(obj)
+    obj.compute_all_performance_curves(
+        psf_trunc_ratio=0.5,
+        separation_step_lod=perf.CORE_STEP_LOD,
+        performance_file=obj._perf_filename(),
+        cache_dir=obj._perf_dir,
+    )
+    warm = Coronagraph(path, psf_trunc_ratio=0.5)
+    for name, value in _metrics(warm).items():
+        assert_allclose(value, expected[name], rtol=RTOL, err_msg=name)
+
+
+@pytest.mark.parametrize("trunc", [None, 0.3])
+def test_legacy_circle_method_is_not_reused(tmp_path, trunc):
+    """A table labeled with the previous cubic aperture cannot supply new curves."""
+    path = _yip(tmp_path, "warm")
+    obj = Coronagraph(path, psf_trunc_ratio=trunc)
+    expected = _metrics(obj)
+    identity = obj._auto_perf_identity()
+    identity.pop("circle_method")
+    identity.pop("circle_oversample")
+    identity["oversample"] = 2
+    if trunc is not None:
+        identity["core_step_lod"] = perf.CORE_STEP_LOD
+    save_coro_performance_to_fits(
+        np.array([0.0, 3.0, 6.0]),
+        np.full(3, 0.123),
+        np.full(3, 0.456),
+        obj._perf_filename(),
+        obj._perf_dir,
+        identity=identity,
+    )
+    warm = Coronagraph(path, psf_trunc_ratio=trunc)
+    for name, value in _metrics(warm).items():
+        assert_allclose(value, expected[name], rtol=RTOL, err_msg=name)
+
+
+@pytest.mark.parametrize("trunc", [None, 0.3])
+def test_center_counting_method_is_not_reused(tmp_path, trunc):
+    """A center-counting table cannot supply fractional, source-local curves."""
+    path = _yip(tmp_path, "warm")
+    obj = Coronagraph(path, psf_trunc_ratio=trunc)
+    expected = _metrics(obj)
+    identity = obj._auto_perf_identity()
+    identity["circle_method"] = "band_limited_float64_subpixel_centers"
+    save_coro_performance_to_fits(
+        np.array([0.0, 3.0, 6.0]),
+        np.full(3, 0.123),
+        np.full(3, 0.456),
+        obj._perf_filename(),
+        obj._perf_dir,
+        identity=identity,
+    )
+    warm = Coronagraph(path, psf_trunc_ratio=trunc)
+    for name, value in _metrics(warm).items():
+        assert_allclose(value, expected[name], rtol=RTOL, err_msg=name)

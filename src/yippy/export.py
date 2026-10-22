@@ -19,7 +19,7 @@ import numpy as np
 from lod_unit import lod
 
 from .logger import logger
-from .performance import compute_radial_average, stellar_axis_index
+from .performance import compute_radial_average
 
 if TYPE_CHECKING:
     from .coronagraph import Coronagraph
@@ -212,22 +212,13 @@ def export_exosims(
     )
 
     # Core mean intensity
-    core_intensities = (
-        coro.core_intensity_dict
-        if hasattr(coro, "core_intensity_dict")
-        else coro.core_mean_intensity_curve(plot=False)[1]
-    )
-    first_diam = next(iter(core_intensities.keys()))
-    stellar_psf = coro.stellar_intens(first_diam)
-    dims = stellar_psf.shape
-    nbins = int(np.floor(np.max(dims) / 2))
-    center_y, center_x = stellar_axis_index(coro)
-    y, x = np.indices(stellar_psf.shape)
-    r = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
-    max_radius = np.max(r)
-    bins = np.linspace(0, max_radius, nbins + 1)
-    bin_centers = (bins[1:] + bins[:-1]) / 2
-    sep_core_intensity = bin_centers * coro.pixel_scale_arcsec.value
+    if hasattr(coro, "core_intensity_dict"):
+        sep_core_intensity = coro.core_intensity_separations
+        core_intensities = coro.core_intensity_dict
+    else:
+        sep_core_intensity, core_intensities = coro.core_mean_intensity_curve(
+            plot=False
+        )
 
     # Write FITS files
     _save_to_exosims_format(

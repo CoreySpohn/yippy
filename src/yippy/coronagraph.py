@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import warnings
 from pathlib import Path
 
 import astropy.io.fits as pyfits
@@ -19,17 +20,22 @@ from .header import HeaderData
 from .logger import logger
 from .offjax import OffJAX
 from .performance import (
-    compute_all_performance_curves as _compute_all_perf,
-)
-from .performance import (
+    CORE_OVERSAMPLE,
+    CORE_WINDOW_LOD,
+    PEAK_SEARCH_RADIUS_LOD,
+    _build_curve_interp,
     compute_core_area_curve,
     compute_core_mean_intensity_curve,
     compute_occ_trans_curve,
     compute_radial_average,
     compute_raw_contrast_curve,
     compute_throughput_curve,
+    core_mean_intensity_profile,
     plot_performance_curve,
     stellar_axis_index,
+)
+from .performance import (
+    compute_all_performance_curves as _compute_all_perf,
 )
 from .sky_trans import SkyTrans
 from .stellar_intens import StellarIntens
@@ -45,7 +51,7 @@ _SAMPLING_CACHE_VERSION = 1
 _CACHE_SCHEMA_VERSION = 2
 
 # Oversampling factor for automatically computed performance tables.
-_DEFAULT_OVERSAMPLE = 2
+_DEFAULT_OVERSAMPLE = CORE_OVERSAMPLE
 
 
 def _load_cached_datacube(path: Path) -> np.ndarray | None:
@@ -106,7 +112,7 @@ class Coronagraph:
         contrast_floor: float | None = None,
         use_inscribed_diameter: bool = False,
         psf_trunc_ratio: float | None = None,
-        interp_order: int = 1,
+        interp_order: int | None = None,
     ):
         """Initialize the Coronagraph object.
 
@@ -160,13 +166,18 @@ class Coronagraph:
                 convert from inscribed to circumscribed units. Default False.
             psf_trunc_ratio (float | None):
                 PSF truncation ratio for throughput and core area computation.
-                When set, pixels above ``ratio * peak`` define the aperture
-                (matching AYO's ``photap_frac`` / ``omega_lod``).
+                When set, pixels above ``ratio * peak`` define the aperture,
+                the definition behind AYO's ``photap_frac`` / ``omega_lod``.
+                AYO measures it on the tabulated PSFs with 5x bilinear
+                resampling, which gives a core a few percent larger than
+                the converged one computed here.
                 When None, a fixed circular aperture is used instead.
                 Typical AYO value is 0.3. Default is None.
-            interp_order (int):
-                B-spline order for performance-curve interpolators.
-                Use 1 for linear (default) or 3 for cubic.
+            interp_order (int | None):
+                None (default) uses shape-preserving PCHIP between performance
+                curve nodes, with linear end-segment extrapolation. An integer
+                uses make_interp_spline(k=interp_order) unchanged. Set 1 to
+                reproduce the previous linear default, or 3 for cubic.
         """
         ###################
         # Read input data #
@@ -246,6 +257,17 @@ class Coronagraph:
         if downsample_shape is not None:
             self.pixel_scale_arcsec = self.offax.pixel_scale_arcsec
 
+        # Check the realized sampling once, including when curves load from cache.
+        pixel_scale_lod = float(self.pixel_scale_arcsec.value)
+        if pixel_scale_lod > 0.5:
+            warnings.warn(
+                f"PSF pixel scale {pixel_scale_lod:g} lambda/D per pixel exceeds "
+                "the Nyquist limit of 0.5 lambda/D per pixel; band-limited "
+                "aperture measurements may be aliased. Computing anyway.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Get the sky_trans mask
         self.sky_trans = SkyTrans(yip_path, sky_trans_file)
 
@@ -303,6 +325,7 @@ class Coronagraph:
             plot=False,
             psf_trunc_ratio=self.psf_trunc_ratio,
             interp_order=self.interp_order,
+            _validated_cache=hit,
         )
 
     def create_psf_datacube(self, batch_size=128):
@@ -595,19 +618,27 @@ class Coronagraph:
         return d
 
     def _perf_identity(
-        self, aperture_radius_lod, psf_trunc_ratio, oversample, stellar_diam
+        self,
+        aperture_radius_lod,
+        psf_trunc_ratio,
+        oversample,
+        stellar_diam,
+        separation_step_lod=None,
     ) -> dict:
         """Complete identity of a stored performance table.
 
-        The table holds separation, throughput and unfloored raw contrast, so
-        the identity covers everything those depend on: the source files and
-        their generation, realized resolution and dtype, the circular aperture
-        radius (which sets contrast even in truncation mode), the aperture
-        mode and threshold, the effective oversampling, and the stellar
-        diameter of the contrast calculation. Settings applied after loading
-        (contrast floor, inscribed-diameter scaling, interpolation order) and
-        quantities recomputed on every construction (core area, occulter
-        transmission, core mean intensity) are not part of it.
+        The table holds separation, throughput and unfloored raw contrast,
+        and in truncation mode the core throughput and core area on their own
+        separation grid, so the identity covers everything those depend on:
+        the source files and their generation, realized resolution and dtype,
+        the circular aperture radius (which sets contrast even in truncation
+        mode), the aperture mode and threshold, the effective oversampling,
+        the stellar diameter of the contrast calculation, and in truncation
+        mode the core's subpixel factor, grid step and window. Settings
+        applied after loading (contrast floor, inscribed-diameter scaling,
+        interpolation order) and quantities recomputed on every construction
+        (circular-mode core area, occulter transmission, core mean intensity)
+        are not part of it.
         """
         identity = self._cache_identity_base(
             "performance",
@@ -620,9 +651,21 @@ class Coronagraph:
                 "aperture_radius_lod": aperture_radius_lod,
                 "psf_trunc_ratio": psf_trunc_ratio,
                 "oversample": oversample,
+                "circle_method": "band_limited_fractional_image_domain_peak",
+                "peak_search_radius_lod": PEAK_SEARCH_RADIUS_LOD,
+                "circle_oversample": oversample,
                 "stellar_diam_lod": getattr(stellar_diam, "value", stellar_diam),
             }
         )
+        if psf_trunc_ratio is not None:
+            identity.update(
+                {
+                    "core_method": "spectral_tangent_fraction_global_strips",
+                    "core_oversample": CORE_OVERSAMPLE,
+                    "core_step_lod": separation_step_lod,
+                    "core_window_lod": CORE_WINDOW_LOD,
+                }
+            )
         return identity
 
     def _auto_perf_identity(self) -> dict:
@@ -700,18 +743,23 @@ class Coronagraph:
         stellar_diam=None,
         fit_gaussian_for_core_area=False,
         use_phot_aperture_as_min=False,
-        oversample=2,
+        oversample=CORE_OVERSAMPLE,
         save_to_fits=True,
         performance_file="coro_perf.fits",
         load_from_file=None,
         cache_dir=None,
         plot=False,
         psf_trunc_ratio=None,
-        interp_order=1,
+        interp_order: int | None = None,
+        _validated_cache=False,
+        separation_step_lod=None,
     ):
         """Compute all coronagraph performance curves at once.
 
         Delegates to :func:`yippy.performance.compute_all_performance_curves`.
+        ``interp_order=None`` (default) uses PCHIP with linear end-segment
+        extrapolation. An integer keeps ``make_interp_spline(k=interp_order)``;
+        ``interp_order=1`` restores the previous linear default.
         """
         return _compute_all_perf(
             self,
@@ -727,6 +775,8 @@ class Coronagraph:
             plot=plot,
             psf_trunc_ratio=psf_trunc_ratio,
             interp_order=interp_order,
+            _validated_cache=_validated_cache,
+            separation_step_lod=separation_step_lod,
         )
 
     def _compute_performance_metrics(
@@ -735,7 +785,7 @@ class Coronagraph:
         aperture_radius_lod=0.7,
         fit_gaussian_for_core_area=False,
         use_phot_aperture_as_min=False,
-        oversample=2,
+        oversample=CORE_OVERSAMPLE,
         compute_throughput=True,
         compute_contrast=True,
         compute_core_area=True,
@@ -968,13 +1018,15 @@ class Coronagraph:
     def core_mean_intensity(self, separation, stellar_diam=0.0 * lod):
         """Return core mean intensity at the given separation(s).
 
-        Interpolates over both separation and stellar angular diameter
-        using a 2D ``RegularGridInterpolator`` when multiple diameters
-        are available and a non-default diameter is requested.  Uses
-        the faster 1D spline for the default diameter (point source)
-        or when the yield input package contains only one diameter.
+        At a nonzero stellar diameter the profile is the azimuthal mean of
+        the stellar intensity map interpolated to that diameter
+        (:meth:`stellar_intens`), so the curve and the map describe the same
+        star at every diameter, not only at the tabulated ones. The profile is
+        computed on first use for each diameter and kept. The default
+        diameter (point source), or a package with a single diameter, uses
+        the precomputed profile.
 
-        Out-of-bounds queries on the 2D grid return ``NaN``.
+        Diameters outside the tabulated range return ``NaN``.
 
         Args:
             separation: Separation(s) in lambda/D.
@@ -997,23 +1049,28 @@ class Coronagraph:
         else:
             diam_val = float(stellar_diam)
 
-        # Use 1D spline for the default diameter (fast path, extrapolates
-        # naturally).  Route through 2D only for non-default diameters
-        # where cross-diameter interpolation is needed.
-        if diam_val != 0.0 and self.core_intensity_interp_2d is not None:
-            points = np.column_stack(
-                [
-                    sep_values,
-                    np.full_like(sep_values, diam_val),
-                ]
-            )
-            result = self.core_intensity_interp_2d(points)
-        else:
+        diams = np.asarray(self.stellar_intens.diams.value)
+        if diam_val == 0.0 or len(diams) < 2:
             result = self.core_intensity_interp(sep_values)
+        elif not diams.min() <= diam_val <= diams.max():
+            result = np.full(np.shape(sep_values), np.nan)
+        else:
+            result = self._core_intensity_interp_at(diam_val)(sep_values)
 
         if self._is_scalar_input(sep_values, separation):
             return float(result[0])
         return result
+
+    def _core_intensity_interp_at(self, diam_val: float):
+        """Separation interpolator of the core mean intensity at one diameter."""
+        interp = self._core_intensity_cache.get(diam_val)
+        if interp is None:
+            profile = core_mean_intensity_profile(self, diam_val * lod)
+            interp = _build_curve_interp(
+                self.core_intensity_separations, profile, self.interp_order
+            )
+            self._core_intensity_cache[diam_val] = interp
+        return interp
 
     # ------------------------------------------------------------------
     # 2D map projections
@@ -1127,7 +1184,9 @@ class Coronagraph:
     # Standalone curve methods (for plotting individual curves)
     # ------------------------------------------------------------------
 
-    def throughput_curve(self, aperture_radius_lod=0.7, oversample=1, plot=True):
+    def throughput_curve(
+        self, aperture_radius_lod=0.7, oversample=CORE_OVERSAMPLE, plot=True
+    ):
         """Compute and optionally plot the throughput curve.
 
         Delegates to :func:`yippy.performance.compute_throughput_curve`.
@@ -1149,7 +1208,11 @@ class Coronagraph:
         return sep, vals
 
     def raw_contrast_curve(
-        self, stellar_diam=0 * lod, aperture_radius_lod=0.7, oversample=2, plot=True
+        self,
+        stellar_diam=0 * lod,
+        aperture_radius_lod=0.7,
+        oversample=CORE_OVERSAMPLE,
+        plot=True,
     ):
         """Compute and optionally plot the raw contrast curve.
 
@@ -1177,7 +1240,7 @@ class Coronagraph:
         aperture_radius_lod=0.7,
         fit_gaussian=False,
         use_phot_aperture_as_min=False,
-        oversample=2,
+        oversample=CORE_OVERSAMPLE,
         plot=True,
     ):
         """Compute and optionally plot the core area curve.

@@ -40,8 +40,9 @@ This is conceptually simple but has several drawbacks:
 
 ### Radial profile projection (yippy)
 
-Bin pixels by radius, compute the mean in each annular bin, fit a 1D
-interpolator, and project back onto the pixel grid:
+Average the map on circles about the optical axis, tabulate that mean
+against radius, fit a 1D interpolator, and project back onto the pixel
+grid:
 
 ```python
 from yippy import Coronagraph
@@ -90,13 +91,24 @@ peaks/troughs. **Right**: radial profiles overlay, showing the radial
 profile method (blue dashed) produces a smoother curve than the
 rotate method (orange solid).
 
-## Radial Binning Parameters
+## Profile Sampling
 
-The radial profile uses `floor(max(image_shape) / 2)` bins (128 for a
-256x256 image). Each bin spans ~1.4 pixels (~0.35 lam/D at pixscale=0.25),
-giving ~3 bins per Airy ring spacing. This is adequate for capturing the
-azimuthal average without tracking fine Airy ring oscillations, which is
-desirable for the averaged quantity.
+The profile is tabulated every quarter pixel in radius, from the axis to the
+farthest pixel center. At each radius the map is sampled at twice as many
+position angles as the image has pixels on a side, with Keys cubic
+interpolation, and the samples that fall inside the image are averaged. The
+value at each radius is therefore the mean intensity at that radius.
+
+Averaging the pixels whose centers fall in an annulus instead mixes a range of
+radii wherever the profile is curved on the scale of the annulus: with
+annuli about 1.4 pixels wide that is off by 1 to 3 percent typically, and by
+up to 15 percent near the sharp minima of a vortex coronagraph's leakage
+profile. The circle-sampled profile agrees with the exact mean to a few
+tenths of a percent except within the deepest nulls.
+
+At a stellar diameter between the tabulated ones, the profile is taken from
+the stellar intensity map interpolated to that diameter (`stellar_intens`),
+so the curve and the map an image simulator renders describe the same star.
 
 ## Recommendation
 

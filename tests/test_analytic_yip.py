@@ -7,25 +7,18 @@ cannot support tests like these: its correct answers are not known
 independently of the code that produces them, so a test against one can only
 pin current behavior.
 
-The recurring tolerance is the aperture-discretization bias. Throughput and
-contrast are summed over whole pixels judged inside a circular aperture of
-0.7 lambda/D, which on a 0.25 lambda/D grid is a 2.8-pixel-radius circle
-approximated by pixel membership. That bias is measured by
-``test_the_aperture_bias_is_a_separation_independent_constant`` rather than
-assumed, and the value it measures is what the looser tolerances below are set
-from.
+The remaining aperture bias is midpoint intensity quadrature over fractional
+boundary cells. An independent circle-square quadrature of the analytic
+Gaussian predicts this small bias without calling the production integrator.
 """
 
 import numpy as np
 import pytest
+from test_band_limited_apertures import reference_circle_weights
 
 APERTURE_RADIUS_LOD = 0.7
 
-# Measured by the first test in this file, which fails if it moves. The
-# aperture holds slightly less flux than the true circle, so the bias is
-# negative.
-APERTURE_BIAS = -0.0187
-APERTURE_BIAS_TOL = 0.002
+APERTURE_BIAS_TOL = 2e-5
 
 
 @pytest.fixture(params=["1d", "2d"])
@@ -46,8 +39,26 @@ def coro(kind, syn_coro_1d, syn_coro_2d):
     return syn_coro_1d if kind == "1d" else syn_coro_2d
 
 
-def test_the_aperture_bias_is_a_separation_independent_constant(package, coro):
-    """The only throughput error is the aperture mask, so it cannot vary with s.
+@pytest.fixture
+def aperture_bias(package):
+    """Fractional-circle midpoint error from the analytic Gaussian alone."""
+    width = package.pixscale / 10
+    half = int(np.ceil(APERTURE_RADIUS_LOD / width)) + 1
+    rows, cols = np.mgrid[-half:half, -half:half] + 0.5
+    weights = reference_circle_weights(rows, cols, APERTURE_RADIUS_LOD / width)
+    sigma = package.psf_sigma_lod
+    intensity = np.exp(-(rows**2 + cols**2) * width**2 / (2 * sigma**2)) / (
+        2 * np.pi * sigma**2
+    )
+    measured = (weights * intensity).sum() * width**2
+    analytic = 1 - np.exp(-(APERTURE_RADIUS_LOD**2) / (2 * sigma**2))
+    return measured / analytic - 1
+
+
+def test_the_aperture_bias_is_a_separation_independent_constant(
+    package, coro, aperture_bias
+):
+    """Midpoint intensity quadrature error cannot vary with separation.
 
     The closed-form throughput is the occulter transmission times the encircled
     flux of a Gaussian, and the encircled-flux factor does not depend on
@@ -63,18 +74,21 @@ def test_the_aperture_bias_is_a_separation_independent_constant(package, coro):
     ratio = got / expected
 
     assert np.ptp(ratio) < 1e-4, f"the throughput bias varies with separation: {ratio}"
-    assert abs(np.mean(ratio) - 1.0 - APERTURE_BIAS) < APERTURE_BIAS_TOL, (
-        f"aperture bias moved to {np.mean(ratio) - 1.0:+.5f}, was {APERTURE_BIAS:+.5f}"
+    assert abs(np.mean(ratio) - 1.0) < 1e-3
+    assert abs(np.mean(ratio) - 1.0 - aperture_bias) < APERTURE_BIAS_TOL, (
+        f"measured bias {np.mean(ratio) - 1.0:+.7f}, quadrature {aperture_bias:+.7f}"
     )
 
 
-def test_throughput_matches_the_encircled_flux_closed_form(package, coro):
+def test_throughput_matches_the_encircled_flux_closed_form(
+    package, coro, aperture_bias
+):
     """Throughput is the occulter transmission times a Gaussian's encircled flux."""
     for separation in (1.0, 2.5, 5.0):
         got = float(coro.throughput(separation))
         expected = package.expected_throughput(separation, APERTURE_RADIUS_LOD)
         assert got == pytest.approx(
-            expected * (1.0 + APERTURE_BIAS), rel=APERTURE_BIAS_TOL
+            expected * (1.0 + aperture_bias), rel=APERTURE_BIAS_TOL
         ), f"throughput({separation})"
 
 
@@ -121,7 +135,7 @@ def test_raw_contrast_divides_two_aperture_sums_not_two_means(package, coro):
     assert np.ptp(implied_area) / np.mean(implied_area) < 1e-3, (
         f"the implied aperture area varies with separation: {implied_area}"
     )
-    assert np.mean(implied_area) == pytest.approx(nominal_area_px, rel=0.03), (
+    assert np.mean(implied_area) == pytest.approx(nominal_area_px, rel=1e-6), (
         f"contrast implies an aperture of {np.mean(implied_area):.2f} pixels, "
         f"not the {nominal_area_px:.2f} a {APERTURE_RADIUS_LOD} lambda/D circle "
         "holds; a value near 1 would mean the numerator is a mean, not a sum"

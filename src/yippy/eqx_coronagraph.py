@@ -35,12 +35,19 @@ from pathlib import Path
 
 import equinox as eqx
 import interpax
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array
 
 from ._precision import float_dtype
 from .coronagraph import Coronagraph
+from .performance import (
+    _PchipWithLinearTails,
+    azimuthal_mean_profile,
+    profile_radii,
+    stellar_axis_index,
+)
 
 
 class EqxCoronagraph(eqx.Module):
@@ -56,7 +63,7 @@ class EqxCoronagraph(eqx.Module):
     recompiling, *provided shapes stay the same*):
 
     - ``sky_trans``, ``psf_datacube``
-    - All ``interpax.CubicSpline`` interpolators (they are ``eqx.Module``
+    - All performance and stellar interpolators (they are ``eqx.Module``
       instances whose leaves are JAX arrays)
 
     **Static** (non-array Python objects -- changing triggers recompilation,
@@ -90,14 +97,26 @@ class EqxCoronagraph(eqx.Module):
     _stellar_ln_interp: interpax.CubicSpline
 
     # -- Performance curves (dynamic: eqx.Module) ------------------------
-    _throughput_interp: interpax.CubicSpline
-    _log_contrast_interp: interpax.CubicSpline
-    _occ_trans_interp: interpax.CubicSpline
-    _core_area_interp: interpax.CubicSpline
-    _core_mean_intensity_interp: interpax.CubicSpline
-    _core_mean_intensity_interp_2d: interpax.Interpolator2D | None
-    _has_2d_core_intensity: bool
+    _throughput_interp: (
+        _JaxPchipWithLinearTails | interpax.Interpolator1D | interpax.CubicSpline
+    )
+    _log_contrast_interp: (
+        _JaxPchipWithLinearTails | interpax.Interpolator1D | interpax.CubicSpline
+    )
+    _occ_trans_interp: (
+        _JaxPchipWithLinearTails | interpax.Interpolator1D | interpax.CubicSpline
+    )
+    _core_area_interp: (
+        _JaxPchipWithLinearTails | interpax.Interpolator1D | interpax.CubicSpline
+    )
+    _core_mean_intensity_interp: (
+        _JaxPchipWithLinearTails | interpax.Interpolator1D | interpax.CubicSpline
+    )
+    _core_intensity_varies_with_diameter: bool = eqx.field(static=True)
     _diam_knot_range: tuple[float, float]
+    _profile_radii_pix: Array
+    _stellar_axis: tuple[float, float] = eqx.field(static=True)
+    _interp_order: int | None = eqx.field(static=True)
 
     # -- Static arrays (dynamic) -----------------------------------------
     sky_trans: Array
@@ -187,7 +206,8 @@ class EqxCoronagraph(eqx.Module):
         # FITS-sourced arrays are big-endian (>f8); jnp cannot ingest those, so
         # an explicit dtype both byte-swaps to native and follows the x64 flag.
         stellar = yippy_coro.stellar_intens
-        stellar_diams = jnp.asarray(stellar.diams.value, dtype=float_dtype())
+        # Match the loader's zero-diameter nudge, including for curved profiles.
+        stellar_diams = jnp.asarray(stellar.ln_interp.x, dtype=float_dtype())
         # Convert stellar PSFs to JAX arrays and build log-space interpolator
         stellar_psfs = jnp.asarray(stellar.psfs, dtype=float_dtype())
         self._stellar_ln_interp = interpax.CubicSpline(
@@ -203,29 +223,17 @@ class EqxCoronagraph(eqx.Module):
             yippy_coro.core_intensity_interp
         )
 
-        # 2D core mean intensity (separation x stellar_diam) when available
-        if yippy_coro.core_intensity_interp_2d is not None:
-            rgi = yippy_coro.core_intensity_interp_2d
-            # RegularGridInterpolator stores grid points in .grid
-            sep_knots = jnp.asarray(rgi.grid[0], dtype=float_dtype())
-            diam_knots = jnp.asarray(rgi.grid[1], dtype=float_dtype())
-            values_2d = jnp.asarray(rgi.values, dtype=float_dtype())
-            self._core_mean_intensity_interp_2d = interpax.Interpolator2D(
-                sep_knots,
-                diam_knots,
-                values_2d,
-                method="linear",
-                extrap=False,  # returns NaN out-of-bounds
-            )
-            self._has_2d_core_intensity = True
-            self._diam_knot_range = (
-                float(jnp.min(diam_knots)),
-                float(jnp.max(diam_knots)),
-            )
-        else:
-            self._core_mean_intensity_interp_2d = None
-            self._has_2d_core_intensity = False
-            self._diam_knot_range = (0.0, 0.0)
+        # Core mean intensity at other diameters: the azimuthal mean of the
+        # interpolated stellar map on the profile radii, computed on demand.
+        diam_values = np.asarray(stellar.diams.value, dtype=float)
+        self._core_intensity_varies_with_diameter = len(diam_values) > 1
+        self._diam_knot_range = (float(diam_values.min()), float(diam_values.max()))
+        self._stellar_axis = tuple(float(c) for c in stellar_axis_index(yippy_coro))
+        self._profile_radii_pix = jnp.asarray(
+            profile_radii(stellar.psfs.shape[-2:], self._stellar_axis),
+            dtype=float_dtype(),
+        )
+        self._interp_order = yippy_coro.interp_order
 
         # -- Sky transmission --------------------------------------------
         self.sky_trans = jnp.asarray(yippy_coro.sky_trans(), dtype=float_dtype())
@@ -347,9 +355,17 @@ class EqxCoronagraph(eqx.Module):
     ) -> Array:
         """Evaluate core mean intensity at the given separation.
 
-        Uses the 1D spline for the default diameter (point source) and
-        the 2D interpolant for non-default stellar diameters when
-        available.
+        Uses the 1D spline for the default diameter (point source). At any
+        other diameter the value is the azimuthal mean of
+        :meth:`stellar_intens` at that diameter, so the curve and the map
+        describe the same star.
+
+        Each call at a nonzero diameter interpolates one stellar map and,
+        with explicit linear interpolation in separation (``interp_order=1``),
+        samples only the two profile circles that bracket the separation, so a
+        ``vmap`` over a catalog of stars holds one map and two circles per star.
+        PCHIP (the default) and cubic interpolation compute the whole profile
+        per call.
 
         Args:
             separation_lod: Separation from the star in lambda/D.
@@ -357,34 +373,67 @@ class EqxCoronagraph(eqx.Module):
                 Default is 0.0 (point source).
 
         Returns:
-            Scalar core mean intensity: the azimuthal mean, about the
-            optical axis, of the fraction of the star's light falling on
+            Core mean intensity with the shape of separation_lod: the azimuthal
+            mean, about the optical axis, of the fraction of the star's light falling on
             one pixel. The unit is per pixel of ``pixel_scale_lod``, not per
             unit solid angle; divide by ``pixel_scale_lod**2`` for
             (lambda/D)^-2.
         """
-        point_source = self._core_mean_intensity_interp(separation_lod)
-        if not self._has_2d_core_intensity:
+        separation_lod = jnp.asarray(separation_lod)
+        point_source = self._core_mean_intensity_interp(separation_lod.ravel()).reshape(
+            separation_lod.shape
+        )
+        if not self._core_intensity_varies_with_diameter:
             return point_source
 
-        # Select with jnp.where rather than a Python if, so that a traced
-        # stellar diameter works: a comparison against a tracer is itself a
-        # tracer and cannot be used in a branch. Both interpolants are
-        # therefore evaluated. The two-dimensional one returns NaN outside its
-        # diameter knots and a NaN in the branch that is not selected still
-        # propagates through a gradient, so the diameter is clamped into the
-        # tabulated range before it is evaluated.
+        # lax.cond rather than a Python if, so that a traced stellar diameter
+        # works, and rather than jnp.where, so that the point-source call does
+        # not pay for a profile. The diameter is clamped into the tabulated
+        # range, where the stellar map interpolant is defined.
         low, high = self._diam_knot_range
         clamped = jnp.clip(stellar_diam_lod, low, high)
-        extended = self._core_mean_intensity_interp_2d(separation_lod, clamped)
-        return jnp.where(stellar_diam_lod == 0.0, point_source, extended)
+        result = jax.lax.cond(
+            stellar_diam_lod == 0.0,
+            lambda: jnp.asarray(point_source),
+            lambda: self._core_mean_intensity_at(separation_lod, clamped),
+        )
+        valid = (stellar_diam_lod == 0.0) | (
+            (stellar_diam_lod >= low) & (stellar_diam_lod <= high)
+        )
+        return jnp.where(valid, result, jnp.nan)
+
+    def _core_mean_intensity_at(self, separation_lod, stellar_diam_lod) -> Array:
+        """Azimuthal mean of the interpolated stellar map at one diameter."""
+        stellar_map = self.stellar_intens(stellar_diam_lod)
+        radii = self._profile_radii_pix
+        r_pix = jnp.asarray(separation_lod, dtype=radii.dtype) / self.pixel_scale_lod
+        if self._interp_order is not None and self._interp_order <= 1:
+            # Linear interpolation (extrapolating past the last radius) needs
+            # only the two profile circles that bracket the separation.
+            i = jnp.clip(jnp.searchsorted(radii, r_pix) - 1, 0, radii.size - 2)
+            pair = radii[jnp.stack([i, i + 1])]
+            means = azimuthal_mean_profile(
+                stellar_map, self._stellar_axis, pair.ravel()
+            ).reshape(pair.shape)
+            frac = (r_pix - pair[0]) / (pair[1] - pair[0])
+            return means[0] + frac * (means[1] - means[0])
+        profile = azimuthal_mean_profile(stellar_map, self._stellar_axis, radii)
+        nodes = radii * self.pixel_scale_lod
+        if self._interp_order is None:
+            interp = _JaxPchipWithLinearTails(nodes, profile)
+        else:
+            interp = interpax.CubicSpline(nodes, profile)
+        return interp((r_pix * self.pixel_scale_lod).ravel()).reshape(r_pix.shape)
 
 
 # -- Helpers ------------------------------------------------------------------
 
 
 def _scipy_to_interpax(scipy_spline):
-    """Convert a ``scipy.interpolate.BSpline`` / ``make_interp_spline`` to interpax.
+    """Convert a performance PCHIP or scipy B-spline to interpax.
+
+    PCHIP uses the same original nodes and values, with the same linear tails.
+    Explicit integer orders retain the existing B-spline conversion.
 
     The scipy spline stores knots (``t``) and coefficients (``c``).  We
     re-evaluate it on its interior knots (the original data x-values) and
@@ -394,11 +443,17 @@ def _scipy_to_interpax(scipy_spline):
     For cubic splines (k=3) we use ``interpax.CubicSpline``.
 
     Args:
-        scipy_spline: A scipy BSpline or result of ``make_interp_spline``.
+        scipy_spline: A performance PCHIP adapter or scipy BSpline.
 
     Returns:
         An interpax interpolator that approximates the same function.
     """
+    if isinstance(scipy_spline, _PchipWithLinearTails):
+        return _JaxPchipWithLinearTails(
+            jnp.asarray(scipy_spline.pchip.x, dtype=float_dtype()),
+            jnp.asarray(scipy_spline.linear.c, dtype=float_dtype()),
+        )
+
     # Extract the unique interior knots (stripping the k+1 padded boundary
     # knots from each end).  For make_interp_spline the interior knots
     # exactly equal the original x data.
@@ -416,3 +471,26 @@ def _scipy_to_interpax(scipy_spline):
     if k <= 1:
         return interpax.Interpolator1D(x_jax, y_jax, method="linear", extrap=True)
     return interpax.CubicSpline(x_jax, y_jax)
+
+
+class _JaxPchipWithLinearTails(eqx.Module):
+    """Differentiable PCHIP with the legacy linear end-segment extrapolation."""
+
+    pchip: interpax.PchipInterpolator
+    linear: interpax.Interpolator1D
+
+    def __init__(self, x, y):
+        """Build both interpolants directly from the original table."""
+        # Nodes are validated by scipy at loading or come from profile_radii.
+        # The profile values may be traced when a stellar diameter is queried.
+        self.pchip = interpax.PchipInterpolator(x, y, extrapolate=False, check=False)
+        self.linear = interpax.Interpolator1D(x, y, method="linear", extrap=True)
+
+    def __call__(self, x):
+        """Use only end-segment slopes outside the tabulated range."""
+        x = jnp.asarray(x)
+        low, high = self.pchip.x[0], self.pchip.x[-1]
+        # Preserve the interior derivative at the endpoints; clip's endpoint
+        # derivative would halve it even for a globally linear curve.
+        interior_x = jnp.where(x < low, low, jnp.where(x > high, high, x))
+        return jnp.where((x < low) | (x > high), self.linear(x), self.pchip(interior_x))
