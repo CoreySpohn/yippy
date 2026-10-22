@@ -36,7 +36,8 @@ FAR_FIELD_SEPARATIONS_LOD = (20.0, 25.0)
 # pin, not a derivation: it catches unintended change and establishes nothing
 # about correctness.
 # Measured with the 10x band-limited circle of radius 0.7 lambda/D.
-EAC1_AAVC_IWA_LOD = 4.27092
+# PCHIP is the default; the explicit linear option preserves the old crossing.
+EAC1_AAVC_IWA_LOD = {None: 4.060305, 1: 4.27092}
 EAC1_AAVC_IWA_TOL = 5e-3
 
 
@@ -122,7 +123,8 @@ def test_the_inscribed_diameter_option_is_exactly_a_separation_rescaling(shipped
         )
 
 
-def test_the_inner_working_angle_has_not_moved(shipped_coro):
+@pytest.mark.parametrize("order", [None, 1])
+def test_the_inner_working_angle_has_not_moved(shipped_coro, order):
     """A regression pin on the derived inner working angle.
 
     Every yield number depends on where the reader says the mask opens. This
@@ -130,10 +132,18 @@ def test_the_inner_working_angle_has_not_moved(shipped_coro):
     throughput curve beneath it; it is not evidence that the value is right.
     The closed-form check of the same derivation is in ``test_analytic_yip.py``.
     """
-    got = float(shipped_coro.IWA.to_value(lod))
-    assert got == pytest.approx(EAC1_AAVC_IWA_LOD, abs=EAC1_AAVC_IWA_TOL), (
-        f"the inner working angle moved to {got:.4f} lambda/D from the pinned "
-        f"{EAC1_AAVC_IWA_LOD}"
+    from yippy import Coronagraph
+
+    coro = (
+        shipped_coro
+        if order is None
+        else Coronagraph(shipped_coro.yip_path, interp_order=order)
+    )
+    got = float(coro.IWA.to_value(lod))
+    expected = EAC1_AAVC_IWA_LOD[order]
+    assert got == pytest.approx(expected, abs=EAC1_AAVC_IWA_TOL), (
+        f"the inner working angle for interp_order={order} moved to "
+        f"{got:.4f} lambda/D from the pinned {expected}"
     )
 
 

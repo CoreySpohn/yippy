@@ -7,6 +7,13 @@ core measurements between offsets. That calculation now requires the explicit
 `separation_step_lod=CORE_STEP_LOD` opt-in; default curves measure the shipped
 PSFs at their own offsets and interpolate the resulting values.
 
+Performance curves are PCHIP-interpolated between the YIP's offsets by
+default. PCHIP preserves the shape of the tabulated curves without overshoot
+near the inner working angle (Fritsch, F. N. and Carlson, R. E. 1980,
+*SIAM J. Numer. Anal.* 17, 238). Set `interp_order=1` to restore the previous
+linear interpolation. Outside the tabulated range, curves retain linear
+end-segment extrapolation.
+
 ## Key Results
 
 | Metric | AAVC mean (max err) | OVC mean (max err) |

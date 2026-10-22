@@ -42,7 +42,12 @@ from jaxtyping import Array
 
 from ._precision import float_dtype
 from .coronagraph import Coronagraph
-from .performance import azimuthal_mean_profile, profile_radii, stellar_axis_index
+from .performance import (
+    _PchipWithLinearTails,
+    azimuthal_mean_profile,
+    profile_radii,
+    stellar_axis_index,
+)
 
 
 class EqxCoronagraph(eqx.Module):
@@ -58,7 +63,7 @@ class EqxCoronagraph(eqx.Module):
     recompiling, *provided shapes stay the same*):
 
     - ``sky_trans``, ``psf_datacube``
-    - All ``interpax.CubicSpline`` interpolators (they are ``eqx.Module``
+    - All performance and stellar interpolators (they are ``eqx.Module``
       instances whose leaves are JAX arrays)
 
     **Static** (non-array Python objects -- changing triggers recompilation,
@@ -92,16 +97,26 @@ class EqxCoronagraph(eqx.Module):
     _stellar_ln_interp: interpax.CubicSpline
 
     # -- Performance curves (dynamic: eqx.Module) ------------------------
-    _throughput_interp: interpax.CubicSpline
-    _log_contrast_interp: interpax.CubicSpline
-    _occ_trans_interp: interpax.CubicSpline
-    _core_area_interp: interpax.CubicSpline
-    _core_mean_intensity_interp: interpax.CubicSpline
+    _throughput_interp: (
+        _JaxPchipWithLinearTails | interpax.Interpolator1D | interpax.CubicSpline
+    )
+    _log_contrast_interp: (
+        _JaxPchipWithLinearTails | interpax.Interpolator1D | interpax.CubicSpline
+    )
+    _occ_trans_interp: (
+        _JaxPchipWithLinearTails | interpax.Interpolator1D | interpax.CubicSpline
+    )
+    _core_area_interp: (
+        _JaxPchipWithLinearTails | interpax.Interpolator1D | interpax.CubicSpline
+    )
+    _core_mean_intensity_interp: (
+        _JaxPchipWithLinearTails | interpax.Interpolator1D | interpax.CubicSpline
+    )
     _core_intensity_varies_with_diameter: bool = eqx.field(static=True)
     _diam_knot_range: tuple[float, float]
     _profile_radii_pix: Array
     _stellar_axis: tuple[float, float] = eqx.field(static=True)
-    _interp_order: int = eqx.field(static=True)
+    _interp_order: int | None = eqx.field(static=True)
 
     # -- Static arrays (dynamic) -----------------------------------------
     sky_trans: Array
@@ -191,7 +206,8 @@ class EqxCoronagraph(eqx.Module):
         # FITS-sourced arrays are big-endian (>f8); jnp cannot ingest those, so
         # an explicit dtype both byte-swaps to native and follows the x64 flag.
         stellar = yippy_coro.stellar_intens
-        stellar_diams = jnp.asarray(stellar.diams.value, dtype=float_dtype())
+        # Match the loader's zero-diameter nudge, including for curved profiles.
+        stellar_diams = jnp.asarray(stellar.ln_interp.x, dtype=float_dtype())
         # Convert stellar PSFs to JAX arrays and build log-space interpolator
         stellar_psfs = jnp.asarray(stellar.psfs, dtype=float_dtype())
         self._stellar_ln_interp = interpax.CubicSpline(
@@ -217,7 +233,7 @@ class EqxCoronagraph(eqx.Module):
             profile_radii(stellar.psfs.shape[-2:], self._stellar_axis),
             dtype=float_dtype(),
         )
-        self._interp_order = int(yippy_coro.interp_order)
+        self._interp_order = yippy_coro.interp_order
 
         # -- Sky transmission --------------------------------------------
         self.sky_trans = jnp.asarray(yippy_coro.sky_trans(), dtype=float_dtype())
@@ -345,10 +361,11 @@ class EqxCoronagraph(eqx.Module):
         describe the same star.
 
         Each call at a nonzero diameter interpolates one stellar map and,
-        with linear interpolation in separation (the default), samples only
-        the two profile circles that bracket the separation, so a ``vmap``
-        over a catalog of stars holds one map and two circles per star. With
-        cubic interpolation the whole profile is computed per call.
+        with explicit linear interpolation in separation (``interp_order=1``),
+        samples only the two profile circles that bracket the separation, so a
+        ``vmap`` over a catalog of stars holds one map and two circles per star.
+        PCHIP (the default) and cubic interpolation compute the whole profile
+        per call.
 
         Args:
             separation_lod: Separation from the star in lambda/D.
@@ -390,7 +407,7 @@ class EqxCoronagraph(eqx.Module):
         stellar_map = self.stellar_intens(stellar_diam_lod)
         radii = self._profile_radii_pix
         r_pix = jnp.asarray(separation_lod, dtype=radii.dtype) / self.pixel_scale_lod
-        if self._interp_order <= 1:
+        if self._interp_order is not None and self._interp_order <= 1:
             # Linear interpolation (extrapolating past the last radius) needs
             # only the two profile circles that bracket the separation.
             i = jnp.clip(jnp.searchsorted(radii, r_pix) - 1, 0, radii.size - 2)
@@ -401,7 +418,11 @@ class EqxCoronagraph(eqx.Module):
             frac = (r_pix - pair[0]) / (pair[1] - pair[0])
             return means[0] + frac * (means[1] - means[0])
         profile = azimuthal_mean_profile(stellar_map, self._stellar_axis, radii)
-        interp = interpax.CubicSpline(radii * self.pixel_scale_lod, profile)
+        nodes = radii * self.pixel_scale_lod
+        if self._interp_order is None:
+            interp = _JaxPchipWithLinearTails(nodes, profile)
+        else:
+            interp = interpax.CubicSpline(nodes, profile)
         return interp((r_pix * self.pixel_scale_lod).ravel()).reshape(r_pix.shape)
 
 
@@ -409,7 +430,10 @@ class EqxCoronagraph(eqx.Module):
 
 
 def _scipy_to_interpax(scipy_spline):
-    """Convert a ``scipy.interpolate.BSpline`` / ``make_interp_spline`` to interpax.
+    """Convert a performance PCHIP or scipy B-spline to interpax.
+
+    PCHIP uses the same original nodes and values, with the same linear tails.
+    Explicit integer orders retain the existing B-spline conversion.
 
     The scipy spline stores knots (``t``) and coefficients (``c``).  We
     re-evaluate it on its interior knots (the original data x-values) and
@@ -419,11 +443,17 @@ def _scipy_to_interpax(scipy_spline):
     For cubic splines (k=3) we use ``interpax.CubicSpline``.
 
     Args:
-        scipy_spline: A scipy BSpline or result of ``make_interp_spline``.
+        scipy_spline: A performance PCHIP adapter or scipy BSpline.
 
     Returns:
         An interpax interpolator that approximates the same function.
     """
+    if isinstance(scipy_spline, _PchipWithLinearTails):
+        return _JaxPchipWithLinearTails(
+            jnp.asarray(scipy_spline.pchip.x, dtype=float_dtype()),
+            jnp.asarray(scipy_spline.linear.c, dtype=float_dtype()),
+        )
+
     # Extract the unique interior knots (stripping the k+1 padded boundary
     # knots from each end).  For make_interp_spline the interior knots
     # exactly equal the original x data.
@@ -441,3 +471,26 @@ def _scipy_to_interpax(scipy_spline):
     if k <= 1:
         return interpax.Interpolator1D(x_jax, y_jax, method="linear", extrap=True)
     return interpax.CubicSpline(x_jax, y_jax)
+
+
+class _JaxPchipWithLinearTails(eqx.Module):
+    """Differentiable PCHIP with the legacy linear end-segment extrapolation."""
+
+    pchip: interpax.PchipInterpolator
+    linear: interpax.Interpolator1D
+
+    def __init__(self, x, y):
+        """Build both interpolants directly from the original table."""
+        # Nodes are validated by scipy at loading or come from profile_radii.
+        # The profile values may be traced when a stellar diameter is queried.
+        self.pchip = interpax.PchipInterpolator(x, y, extrapolate=False, check=False)
+        self.linear = interpax.Interpolator1D(x, y, method="linear", extrap=True)
+
+    def __call__(self, x):
+        """Use only end-segment slopes outside the tabulated range."""
+        x = jnp.asarray(x)
+        low, high = self.pchip.x[0], self.pchip.x[-1]
+        # Preserve the interior derivative at the endpoints; clip's endpoint
+        # derivative would halve it even for a globally linear curve.
+        interior_x = jnp.where(x < low, low, jnp.where(x > high, high, x))
+        return jnp.where((x < low) | (x > high), self.linear(x), self.pchip(interior_x))

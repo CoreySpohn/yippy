@@ -25,7 +25,7 @@ from hwoutils.map_coordinates import map_coordinates
 from hwoutils.radial import radial_profile
 from hwoutils.transforms import resample_flux
 from lod_unit import lod
-from scipy.interpolate import make_interp_spline
+from scipy.interpolate import PchipInterpolator, make_interp_spline
 from scipy.optimize import root_scalar
 
 from .logger import logger
@@ -1396,18 +1396,40 @@ def compute_core_mean_intensity_curve(
 # ---------------------------------------------------------------------------
 
 
+class _PchipWithLinearTails:
+    """Shape-preserving interior with the legacy end-segment extrapolation."""
+
+    def __init__(self, x, y):
+        """Keep the original nodes and values for the Equinox conversion."""
+        self.pchip = PchipInterpolator(x, y, extrapolate=False)
+        self.linear = make_interp_spline(x, y, k=1)
+
+    def __call__(self, x):
+        """Evaluate PCHIP inside the table and the linear segments outside."""
+        x = np.asarray(x)
+        outside = (x < self.pchip.x[0]) | (x > self.pchip.x[-1])
+        return np.where(outside, self.linear(x), self.pchip(x))
+
+
+def _build_curve_interp(x, y, interp_order):
+    """Use PCHIP by default, retaining explicit B-spline orders unchanged."""
+    if interp_order is None:
+        return _PchipWithLinearTails(x, y)
+    return make_interp_spline(x, y, k=interp_order)
+
+
 def _build_perf_interps(
     coro, sep_t, throughput, sep, raw_contrast, sep_ca, core_area, interp_order
 ):
     """Assign throughput, contrast, and core area spline interpolators to *coro*."""
     coro.interp_order = interp_order
-    coro.throughput_interp = make_interp_spline(sep_t, throughput, k=interp_order)
+    coro.throughput_interp = _build_curve_interp(sep_t, throughput, interp_order)
 
     log_contrast = np.log10(np.abs(raw_contrast) + 1e-20)
-    coro._log_contrast_interp = make_interp_spline(sep, log_contrast, k=interp_order)
-    coro.raw_contrast_interp = make_interp_spline(sep, raw_contrast, k=interp_order)
+    coro._log_contrast_interp = _build_curve_interp(sep, log_contrast, interp_order)
+    coro.raw_contrast_interp = _build_curve_interp(sep, raw_contrast, interp_order)
 
-    coro.core_area_interp = make_interp_spline(sep_ca, core_area, k=interp_order)
+    coro.core_area_interp = _build_curve_interp(sep_ca, core_area, interp_order)
 
 
 # ---------------------------------------------------------------------------
@@ -1428,13 +1450,16 @@ def compute_all_performance_curves(
     cache_dir: Path | None = None,
     plot: bool = False,
     psf_trunc_ratio: float | None = None,
-    interp_order: int = 1,
+    interp_order: int | None = None,
     _validated_cache: bool = False,
     separation_step_lod: float | None = None,
 ) -> dict:
     """Compute (or load) all coronagraph performance curves.
 
-    Stores interpolators on *coro*.
+    Stores interpolators on *coro*. ``interp_order=None`` (the default) uses
+    shape-preserving PCHIP between nodes and linear end-segment extrapolation.
+    An integer uses ``make_interp_spline(k=interp_order)`` unchanged, so
+    ``interp_order=1`` restores the previous linear behavior.
     This is the main entrypoint called during ``Coronagraph.__init__``.  It
     delegates to the individual ``compute_*`` helpers above, builds spline
     interpolators, and computes IWA / OWA.
@@ -1590,7 +1615,7 @@ def compute_all_performance_curves(
     # ------------------------------------------------------------------
     logger.info("Computing occulter transmission curve...")
     sep_occ_trans, occ_trans = compute_occ_trans_curve(coro)
-    coro.occ_trans_interp = make_interp_spline(sep_occ_trans, occ_trans, k=interp_order)
+    coro.occ_trans_interp = _build_curve_interp(sep_occ_trans, occ_trans, interp_order)
 
     # ------------------------------------------------------------------
     # Core mean intensity
@@ -1607,10 +1632,10 @@ def compute_all_performance_curves(
 
     # 1D spline for the default stellar diameter (backward compatibility
     # and fast path for the common single-diameter case)
-    coro.core_intensity_interp = make_interp_spline(
+    coro.core_intensity_interp = _build_curve_interp(
         sep_core_intensity,
         core_intensities[stellar_diam],
-        k=interp_order,
+        interp_order,
     )
 
     # ------------------------------------------------------------------

@@ -11,7 +11,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from lod_unit import lod
-from scipy.interpolate import make_interp_spline
 from tqdm import tqdm
 
 from ._precision import dtype_tag, float_dtype
@@ -24,6 +23,7 @@ from .performance import (
     CORE_OVERSAMPLE,
     CORE_WINDOW_LOD,
     PEAK_SEARCH_RADIUS_LOD,
+    _build_curve_interp,
     compute_core_area_curve,
     compute_core_mean_intensity_curve,
     compute_occ_trans_curve,
@@ -112,7 +112,7 @@ class Coronagraph:
         contrast_floor: float | None = None,
         use_inscribed_diameter: bool = False,
         psf_trunc_ratio: float | None = None,
-        interp_order: int = 1,
+        interp_order: int | None = None,
     ):
         """Initialize the Coronagraph object.
 
@@ -173,9 +173,11 @@ class Coronagraph:
                 the converged one computed here.
                 When None, a fixed circular aperture is used instead.
                 Typical AYO value is 0.3. Default is None.
-            interp_order (int):
-                B-spline order for performance-curve interpolators.
-                Use 1 for linear (default) or 3 for cubic.
+            interp_order (int | None):
+                None (default) uses shape-preserving PCHIP between performance
+                curve nodes, with linear end-segment extrapolation. An integer
+                uses make_interp_spline(k=interp_order) unchanged. Set 1 to
+                reproduce the previous linear default, or 3 for cubic.
         """
         ###################
         # Read input data #
@@ -748,13 +750,16 @@ class Coronagraph:
         cache_dir=None,
         plot=False,
         psf_trunc_ratio=None,
-        interp_order=1,
+        interp_order: int | None = None,
         _validated_cache=False,
         separation_step_lod=None,
     ):
         """Compute all coronagraph performance curves at once.
 
         Delegates to :func:`yippy.performance.compute_all_performance_curves`.
+        ``interp_order=None`` (default) uses PCHIP with linear end-segment
+        extrapolation. An integer keeps ``make_interp_spline(k=interp_order)``;
+        ``interp_order=1`` restores the previous linear default.
         """
         return _compute_all_perf(
             self,
@@ -1061,8 +1066,8 @@ class Coronagraph:
         interp = self._core_intensity_cache.get(diam_val)
         if interp is None:
             profile = core_mean_intensity_profile(self, diam_val * lod)
-            interp = make_interp_spline(
-                self.core_intensity_separations, profile, k=self.interp_order
+            interp = _build_curve_interp(
+                self.core_intensity_separations, profile, self.interp_order
             )
             self._core_intensity_cache[diam_val] = interp
         return interp

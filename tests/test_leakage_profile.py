@@ -13,6 +13,7 @@ azimuthal mean; on the shipped vortex package it agrees with the Fourier-Bessel
 series of the map to 0.4 percent everywhere tested.
 """
 
+import jax
 import numpy as np
 import pytest
 from conftest import REFERENCE_DATA_REQUIRED
@@ -157,16 +158,39 @@ def test_curve_follows_the_map_between_tabulated_diameters(ring_coro, diameter_l
     )
 
 
-def test_jax_view_matches_the_loader_between_diameters(ring_coro):
-    """EqxCoronagraph gives the loader's curve at an untabulated diameter."""
+@pytest.mark.parametrize("order", [None, 1])
+def test_jax_view_matches_the_loader_between_diameters(ring_coro, order):
+    """A nonconstant radial profile agrees in float64, including linear tails."""
     from yippy.eqx_coronagraph import EqxCoronagraph
 
-    eqx_coro = EqxCoronagraph(yippy_coro=ring_coro)
-    pixel_lod = float(ring_coro.pixel_scale_arcsec.value)
-    for separation in np.array([6.0, 10.0, 13.5]) * pixel_lod:
-        expected = ring_coro.core_mean_intensity(separation, 0.075 * lod)
-        got = float(eqx_coro.core_mean_intensity(separation, 0.075))
-        assert got == pytest.approx(expected, rel=1e-4)
+    with jax.enable_x64():
+        coro = Coronagraph(ring_coro.yip_path, interp_order=order)
+        eqx_coro = EqxCoronagraph(yippy_coro=coro)
+        nodes = coro.core_intensity_separations
+        separations = np.array(
+            [
+                nodes[0] - 0.3,
+                nodes[0],
+                1.39,
+                2.03,
+                3.37,
+                nodes[-1],
+                nodes[-1] + 0.3,
+                nodes[-1] + 2.0,
+            ]
+        ).reshape(2, 4)
+        evaluate = jax.jit(lambda x, d: eqx_coro.core_mean_intensity(x, d))
+        for diameter in [0.0, 0.075]:
+            expected = coro.core_mean_intensity(separations, diameter * lod)
+            eager = eqx_coro.core_mean_intensity(separations, diameter)
+            np.testing.assert_allclose(eager, expected, rtol=1e-12, atol=1e-24)
+            np.testing.assert_allclose(
+                evaluate(separations, diameter), expected, rtol=1e-12, atol=1e-24
+            )
+        scalar = eqx_coro.core_mean_intensity(2.03, 0.075)
+        np.testing.assert_allclose(
+            scalar, coro.core_mean_intensity(2.03, 0.075 * lod), rtol=1e-12, atol=1e-24
+        )
 
 
 def test_diameter_outside_the_tabulated_range_is_nan(ring_coro):

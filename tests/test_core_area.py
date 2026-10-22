@@ -24,6 +24,7 @@ import astropy.io.fits as pyfits
 import numpy as np
 import pytest
 from conftest import REFERENCE_DATA_REQUIRED
+from scipy.interpolate import PchipInterpolator
 from scipy.optimize import brentq
 
 from yippy import Coronagraph
@@ -238,11 +239,11 @@ def shipped_trunc_coro():
 def test_shipped_core_area_matches_the_band_limited_psf(
     shipped_trunc_coro, separation_lod
 ):
-    """On a shipped package the curve is the core area of the rendered PSF.
+    """The default area curve interpolates native band-limited core measurements.
 
-    The reference counts above-threshold cells of the synthesized PSF's
+    The reference counts above-threshold cells of the native PSFs'
     band-limited reconstruction over the whole image, eight times finer than
-    the package pixels.
+    the package pixels, and interpolates those measurements with PCHIP.
     """
     coro = shipped_trunc_coro
     pixel_lod = float(coro.pixel_scale_arcsec.value)
@@ -256,8 +257,9 @@ def test_shipped_core_area_matches_the_band_limited_psf(
         is not None
     ]
     native_nodes = nodes[valid]
-    lo = native_nodes[native_nodes <= separation_lod].max()
-    hi = native_nodes[native_nodes >= separation_lod].min()
+    i = np.searchsorted(native_nodes, separation_lod, side="right") - 1
+    # PCHIP needs the neighboring secants to set both interval derivatives.
+    stencil = native_nodes[max(0, i - 1) : min(len(native_nodes), i + 3)]
     values = [
         fourier_upsampled_core(
             coro.offax.get_psf_by_offset_idx(
@@ -268,9 +270,9 @@ def test_shipped_core_area_matches_the_band_limited_psf(
             SHIPPED_RATIO,
             factor=8,
         )[0]
-        for s in (lo, hi)
+        for s in stencil
     ]
-    expected = np.interp(separation_lod, [lo, hi], values)
+    expected = PchipInterpolator(stencil, values)(separation_lod)
     got = coro.core_area(separation_lod)
     assert got == pytest.approx(expected, rel=AREA_TOL)
 
@@ -332,7 +334,7 @@ def test_core_throughput_follows_the_synthesized_psf_between_offsets(
 def test_shipped_core_throughput_matches_the_band_limited_psf(
     shipped_trunc_coro, separation_lod
 ):
-    """On a shipped package the throughput is the light in the rendered core."""
+    """The default throughput curve interpolates native band-limited core fluxes."""
     coro = shipped_trunc_coro
     pixel_lod = float(coro.pixel_scale_arcsec.value)
     y_offsets = np.asarray(coro.offax.y_offsets, dtype=float)
@@ -345,8 +347,9 @@ def test_shipped_core_throughput_matches_the_band_limited_psf(
         is not None
     ]
     native_nodes = nodes[valid]
-    lo = native_nodes[native_nodes <= separation_lod].max()
-    hi = native_nodes[native_nodes >= separation_lod].min()
+    i = np.searchsorted(native_nodes, separation_lod, side="right") - 1
+    # PCHIP needs the neighboring secants to set both interval derivatives.
+    stencil = native_nodes[max(0, i - 1) : min(len(native_nodes), i + 3)]
     values = [
         fourier_upsampled_core(
             coro.offax.get_psf_by_offset_idx(
@@ -357,9 +360,9 @@ def test_shipped_core_throughput_matches_the_band_limited_psf(
             SHIPPED_RATIO,
             factor=8,
         )[1]
-        for s in (lo, hi)
+        for s in stencil
     ]
-    expected = np.interp(separation_lod, [lo, hi], values)
+    expected = PchipInterpolator(stencil, values)(separation_lod)
     got = coro.throughput(separation_lod)
     assert got == pytest.approx(expected, rel=THROUGHPUT_TOL)
 
@@ -380,9 +383,11 @@ def edge_package(tmp_path_factory):
 
 
 def gaussian_core_expected(package, separations, ratio):
-    """Closed-form (throughput, area) of the synthesized Gaussian PSFs."""
+    """PCHIP of closed-form native Gaussian fluxes, and their constant core area."""
     nodes = np.sort(package.offsets[:, 0])
-    flux = np.interp(separations, nodes, package.psf_flux * package.occulter(nodes))
+    flux = PchipInterpolator(nodes, package.psf_flux * package.occulter(nodes))(
+        separations
+    )
     return flux * (1.0 - ratio), gaussian_core_area(package.psf_sigma_lod, ratio)
 
 
